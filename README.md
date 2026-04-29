@@ -8,6 +8,7 @@ It uses Telegram long polling, Neon Postgres for storage, `dateparser` for local
 
 - Text message to parsed task
 - Voice note download, ffmpeg conversion, local Whisper transcription, and parsed task
+- Per-user local timezone detection from shared Telegram location
 - Clean task cards with local due times
 - App-style Telegram buttons for current tasks, due today, mark done, and remind again in 20 minutes
 - Neon Postgres task storage
@@ -39,7 +40,7 @@ Optional:
 - `OPENAI_API_KEY`: enables OpenAI JSON parsing. If missing, rate-limited, or failing, Atlas Life OS uses the local fallback parser.
 - `WHISPER_MODEL_SIZE`: defaults to `tiny`.
 - `REMINDER_CHECK_SECONDS`: defaults to `60`.
-- `LOCAL_TIMEZONE`: defaults to `Asia/Dubai`. Due times are parsed and displayed in this timezone.
+- `LOCAL_TIMEZONE`: fallback timezone before a user shares location. Defaults to `Asia/Dubai`.
 
 ## Create a Telegram Bot
 
@@ -54,7 +55,7 @@ Optional:
 2. Copy the pooled or direct connection string into `DATABASE_URL`.
 3. Make sure the connection string includes `sslmode=require`.
 
-Atlas Life OS creates the required `tasks` table and indexes automatically on startup. You can also run `schema.sql` manually in the Neon SQL editor if you want to verify or repair the schema yourself.
+Atlas Life OS creates the required `tasks` and `user_settings` tables automatically on startup. You can also run `schema.sql` manually in the Neon SQL editor if you want to verify or repair the schema yourself.
 
 Your database URL contains credentials. Keep it private and do not expose it in frontend code.
 
@@ -73,6 +74,8 @@ On startup, Atlas Life OS ensures the database schema exists before it begins pr
 ## Task App Flow
 
 Open `/start` to see the main Atlas Life OS screen with counts and buttons. You do not need a button for new tasks: speak or type into Telegram and Atlas will capture it.
+
+Telegram does not expose timezone silently. When a user shares location once from the `Update local time` button, Atlas detects and stores that user's timezone in Neon. After that, parsing, task lists, due-today queries, and reminders use that user's local time automatically.
 
 Saved tasks are read back as a clean card with the tidied title and local due time. Categories and priorities are kept internally but not shown under the task.
 
@@ -111,6 +114,7 @@ due_at ASC NULLS LAST, created_at DESC
 
 ## Known Limitations
 
+- Telegram requires the user to share location once before Atlas can know that user's timezone.
 - The fallback parser is keyword-based and intentionally simple.
 - Local Whisper transcription can be slow on small CPUs.
 - Neon free tier limits apply.
