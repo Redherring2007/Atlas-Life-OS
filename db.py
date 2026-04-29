@@ -34,6 +34,12 @@ create table if not exists public.tasks (
     completed_at timestamptz null
 );
 
+create table if not exists public.user_settings (
+    telegram_user_id text primary key,
+    timezone text not null,
+    updated_at timestamptz default now()
+);
+
 create or replace function public.set_updated_at()
 returns trigger as $$
 begin
@@ -45,6 +51,12 @@ $$ language plpgsql;
 drop trigger if exists tasks_set_updated_at on public.tasks;
 create trigger tasks_set_updated_at
 before update on public.tasks
+for each row
+execute function public.set_updated_at();
+
+drop trigger if exists user_settings_set_updated_at on public.user_settings;
+create trigger user_settings_set_updated_at
+before update on public.user_settings
 for each row
 execute function public.set_updated_at();
 
@@ -83,6 +95,28 @@ def _serialize_task(task: dict[str, Any] | None) -> dict[str, Any] | None:
 
 def _serialize_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [_serialize_task(task) for task in tasks if task is not None]
+
+
+def get_user_timezone(telegram_user_id: str) -> str:
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("select timezone from user_settings where telegram_user_id = %s", (str(telegram_user_id),))
+            row = cur.fetchone()
+            return row["timezone"] if row else config.local_timezone
+
+
+def set_user_timezone(telegram_user_id: str, timezone_name: str) -> None:
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                insert into user_settings (telegram_user_id, timezone)
+                values (%s, %s)
+                on conflict (telegram_user_id)
+                do update set timezone = excluded.timezone
+                """,
+                (str(telegram_user_id), timezone_name),
+            )
 
 
 def create_task(task: dict[str, Any]) -> dict[str, Any]:
@@ -135,7 +169,7 @@ def list_pending_tasks(telegram_user_id: str) -> list[dict[str, Any]]:
 
 
 def list_today_tasks(telegram_user_id: str) -> list[dict[str, Any]]:
-    local_tz = ZoneInfo(config.local_timezone)
+    local_tz = ZoneInfo(get_user_timezone(telegram_user_id))
     now = datetime.now(local_tz)
     start = now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
     end = (now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)).astimezone(timezone.utc)
@@ -239,14 +273,15 @@ def fetch_due_reminder_tasks() -> list[dict[str, Any]]:
         with conn.cursor() as cur:
             cur.execute(
                 f"""
-                select *
+                select tasks.*, coalesce(user_settings.timezone, %s) as user_timezone
                 from tasks
+                left join user_settings on user_settings.telegram_user_id = tasks.telegram_user_id
                 where status = 'pending'
                   and reminder_sent = false
                   and due_at <= %s
                 order by {TASK_ORDER}
                 """,
-                (now,),
+                (config.local_timezone, now),
             )
             return _serialize_tasks(cur.fetchall())
 
