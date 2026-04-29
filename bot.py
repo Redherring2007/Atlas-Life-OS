@@ -22,6 +22,7 @@ from db import (
     list_overdue_tasks,
     list_pending_tasks,
     list_today_tasks,
+    restore_task_by_id,
     set_user_timezone,
     snooze_task_by_id,
     update_task_by_id,
@@ -80,6 +81,10 @@ def _edit_choice_buttons(task_id: str) -> InlineKeyboardMarkup:
 
 def _edit_cancel_buttons() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Back", callback_data="cancel_edit")]])
+
+
+def _undo_buttons(task_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Undo", callback_data=f"undo:{task_id}")]])
 
 
 def _task_card(task: dict[str, Any], local_timezone: str, heading: str = "Task", icon: str = "📝") -> str:
@@ -255,7 +260,7 @@ async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not task:
         await update.message.reply_text("That task is already done or no longer available.")
         return
-    await update.message.reply_text(f"✅ Done\n\n{task['title']}")
+    await update.message.reply_text(f"✅ Done\n\n{task['title']}", reply_markup=_undo_buttons(task["id"]))
 
 
 async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -446,9 +451,17 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         context.user_data.pop(EDITING_TASK_KEY, None)
         context.user_data.pop(EDITING_MODE_KEY, None)
         if task:
-            await query.edit_message_text(f"✅ Done\n\n{task['title']}")
+            await query.edit_message_text(f"✅ Done\n\n{task['title']}", reply_markup=_undo_buttons(task["id"]))
         else:
             await query.edit_message_text("That task is already done or no longer available.")
+        return
+
+    if action == "undo" and task_id:
+        task = await asyncio.to_thread(restore_task_by_id, user_id, task_id)
+        if task:
+            await query.edit_message_text(_task_card(task, local_timezone, "Restored", "↩️"), reply_markup=_task_buttons(task))
+        else:
+            await query.edit_message_text("That task could not be restored.")
         return
 
     if action == "snooze20" and task_id:
