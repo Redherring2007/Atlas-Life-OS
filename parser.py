@@ -39,11 +39,11 @@ def _utc_iso(dt: datetime | None) -> str | None:
     return dt.astimezone(timezone.utc).isoformat()
 
 
-def _dateparser_settings() -> dict[str, Any]:
+def _dateparser_settings(local_timezone: str) -> dict[str, Any]:
     return {
         "PREFER_DATES_FROM": "future",
         "RETURN_AS_TIMEZONE_AWARE": True,
-        "TIMEZONE": config.local_timezone,
+        "TIMEZONE": local_timezone,
         "TO_TIMEZONE": "UTC",
     }
 
@@ -53,8 +53,8 @@ def _clean_title(text: str) -> str:
     return title[:240] or "Untitled task"
 
 
-def _fallback_due_at(text: str) -> str | None:
-    settings = _dateparser_settings()
+def _fallback_due_at(text: str, local_timezone: str) -> str | None:
+    settings = _dateparser_settings(local_timezone)
     matches = search_dates(text, settings=settings)
     if matches:
         return _utc_iso(matches[-1][1])
@@ -86,21 +86,21 @@ def _fallback_priority(text: str) -> str:
     return "medium"
 
 
-def fallback_parse_task(text: str) -> ParsedTask:
+def fallback_parse_task(text: str, local_timezone: str) -> ParsedTask:
     return ParsedTask(
         title=_clean_title(text),
-        due_at=_fallback_due_at(text),
+        due_at=_fallback_due_at(text, local_timezone),
         category=_fallback_category(text),
         priority=_fallback_priority(text),
     )
 
 
-def _validate_openai_payload(payload: dict[str, Any], original: str) -> ParsedTask:
+def _validate_openai_payload(payload: dict[str, Any], original: str, local_timezone: str) -> ParsedTask:
     title = _clean_title(str(payload.get("title") or original))
     due_at_value = payload.get("due_at")
     due_at = None
     if due_at_value:
-        parsed = dateparser.parse(str(due_at_value), settings=_dateparser_settings())
+        parsed = dateparser.parse(str(due_at_value), settings=_dateparser_settings(local_timezone))
         due_at = _utc_iso(parsed)
     category = str(payload.get("category") or "task")
     priority = str(payload.get("priority") or "medium")
@@ -111,7 +111,7 @@ def _validate_openai_payload(payload: dict[str, Any], original: str) -> ParsedTa
     return ParsedTask(title=title, due_at=due_at, category=category, priority=priority)
 
 
-async def _openai_parse_task(text: str) -> ParsedTask:
+async def _openai_parse_task(text: str, local_timezone: str) -> ParsedTask:
     from openai import AsyncOpenAI
 
     client = AsyncOpenAI(api_key=config.openai_api_key)
@@ -123,7 +123,7 @@ async def _openai_parse_task(text: str) -> ParsedTask:
                 "role": "system",
                 "content": (
                     "You convert short user messages into strict JSON tasks. "
-                    f"Interpret relative dates and times in the user's local timezone: {config.local_timezone}. "
+                    f"Interpret relative dates and times in the user's local timezone: {local_timezone}. "
                     "Return only keys: title, due_at, category, priority. "
                     "due_at must be ISO 8601 with timezone or null. "
                     "category must be one of task, reminder, payment_follow_up, "
@@ -136,13 +136,14 @@ async def _openai_parse_task(text: str) -> ParsedTask:
         temperature=0,
     )
     content = response.choices[0].message.content or "{}"
-    return _validate_openai_payload(json.loads(content), text)
+    return _validate_openai_payload(json.loads(content), text, local_timezone)
 
 
-async def parse_task(text: str) -> ParsedTask:
+async def parse_task(text: str, local_timezone: str | None = None) -> ParsedTask:
+    timezone_name = local_timezone or config.local_timezone
     if config.openai_api_key:
         try:
-            return await _openai_parse_task(text)
+            return await _openai_parse_task(text, timezone_name)
         except Exception:
             pass
-    return fallback_parse_task(text)
+    return fallback_parse_task(text, timezone_name)
