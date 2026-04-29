@@ -55,25 +55,16 @@ def _format_due(value: str | None, local_timezone: str) -> str:
         return value
 
 
-def _main_menu_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        [
-            [KeyboardButton(MENU_CURRENT_TASKS)],
-            [KeyboardButton(MENU_DUE_TODAY)],
-            [KeyboardButton(MENU_UPDATE_TIME, request_location=True)],
-        ],
-        resize_keyboard=True,
-        is_persistent=True,
-        input_field_placeholder="Speak or type a task...",
-    )
+def _main_menu_keyboard() -> InlineKeyboardMarkup:
+    return _home_buttons()
 
 
-def _edit_menu_keyboard() -> ReplyKeyboardMarkup:
+def _location_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [[KeyboardButton(MENU_BACK)]],
+        [[KeyboardButton("📍 Share location", request_location=True)]],
         resize_keyboard=True,
-        is_persistent=True,
-        input_field_placeholder="Send the corrected task...",
+        one_time_keyboard=True,
+        input_field_placeholder="Share location to update local time...",
     )
 
 
@@ -106,6 +97,7 @@ def _home_buttons() -> InlineKeyboardMarkup:
         [
             [InlineKeyboardButton("📋 Current tasks", callback_data="tasks:pending")],
             [InlineKeyboardButton("📅 Due today", callback_data="tasks:today")],
+            [InlineKeyboardButton("📍 Update local time", callback_data="time:update")],
         ]
     )
 
@@ -129,6 +121,7 @@ def _task_list_buttons(tasks: list[dict[str, Any]]) -> InlineKeyboardMarkup:
             InlineKeyboardButton(f"✅ Done {index}", callback_data=f"done:{task['id']}"),
         ])
     rows.append([InlineKeyboardButton("🔄 Refresh", callback_data="tasks:pending")])
+    rows.append([InlineKeyboardButton("↩️ Home", callback_data="home")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -161,21 +154,26 @@ def _task_updates(text: str, parsed: ParsedTask) -> dict[str, Any]:
     }
 
 
-async def _send_home(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = str(update.effective_user.id)
+async def _home_message(user_id: str) -> str:
     local_timezone = await asyncio.to_thread(get_user_timezone, user_id)
     pending, today = await asyncio.gather(
         asyncio.to_thread(list_pending_tasks, user_id),
         asyncio.to_thread(list_today_tasks, user_id),
     )
-    message = (
+    return (
         f"🧭 {APP_NAME}\n\n"
         f"📋 Current tasks: {len(pending)}\n"
         f"📅 Due today: {len(today)}\n"
         f"📍 Local time: {local_timezone}\n\n"
         "Speak or type a task whenever you want to capture something."
     )
-    await update.message.reply_text(message, reply_markup=_main_menu_keyboard())
+
+
+async def _send_home(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        await _home_message(str(update.effective_user.id)),
+        reply_markup=_home_buttons(),
+    )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -192,14 +190,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/overdue - view overdue tasks\n"
         "/done <task number> - mark a task done\n"
         "/delete <task number> - delete a task",
-        reply_markup=_main_menu_keyboard(),
+        reply_markup=_home_buttons(),
     )
 
 
 async def _send_task_list(update: Update, tasks: list[dict[str, Any]], title: str, empty_message: str, local_timezone: str) -> None:
     await update.message.reply_text(
         _task_list_message(tasks, title, empty_message, local_timezone),
-        reply_markup=_task_list_buttons(tasks) if tasks else _main_menu_keyboard(),
+        reply_markup=_task_list_buttons(tasks) if tasks else _home_buttons(),
     )
 
 
@@ -242,35 +240,35 @@ def _task_number(context: ContextTypes.DEFAULT_TYPE) -> int | None:
 async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     number = _task_number(context)
     if number is None:
-        await update.message.reply_text("Use /done <task number>.", reply_markup=_main_menu_keyboard())
+        await update.message.reply_text("Use /done <task number>.", reply_markup=_home_buttons())
         return
     task = await asyncio.to_thread(complete_task_by_number, str(update.effective_user.id), number)
     if not task:
-        await update.message.reply_text("That task is already done or no longer available.", reply_markup=_main_menu_keyboard())
+        await update.message.reply_text("That task is already done or no longer available.", reply_markup=_home_buttons())
         return
-    await update.message.reply_text(f"✅ Done\n\n{task['title']}", reply_markup=_main_menu_keyboard())
+    await update.message.reply_text(f"✅ Done\n\n{task['title']}", reply_markup=_home_buttons())
 
 
 async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     number = _task_number(context)
     if number is None:
-        await update.message.reply_text("Use /delete <task number>.", reply_markup=_main_menu_keyboard())
+        await update.message.reply_text("Use /delete <task number>.", reply_markup=_home_buttons())
         return
     task = await asyncio.to_thread(delete_task_by_number, str(update.effective_user.id), number)
     if not task:
-        await update.message.reply_text("That task is already done or no longer available.", reply_markup=_main_menu_keyboard())
+        await update.message.reply_text("That task is already done or no longer available.", reply_markup=_home_buttons())
         return
-    await update.message.reply_text(f"🗑 Deleted\n\n{task['title']}", reply_markup=_main_menu_keyboard())
+    await update.message.reply_text(f"🗑 Deleted\n\n{task['title']}", reply_markup=_home_buttons())
 
 
 async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     location = update.message.location
     timezone_name = TIMEZONE_FINDER.timezone_at(lat=location.latitude, lng=location.longitude)
     if not timezone_name:
-        await update.message.reply_text("I could not detect a timezone from that location.", reply_markup=_main_menu_keyboard())
+        await update.message.reply_text("I could not detect a timezone from that location.", reply_markup=_home_buttons())
         return
     await asyncio.to_thread(set_user_timezone, str(update.effective_user.id), timezone_name)
-    await update.message.reply_text(f"📍 Local time updated\n\n{timezone_name}", reply_markup=_main_menu_keyboard())
+    await update.message.reply_text(f"📍 Local time updated\n\n{timezone_name}", reply_markup=_home_buttons())
 
 
 async def _handle_edit_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, task_id: str, local_timezone: str) -> bool:
@@ -278,17 +276,16 @@ async def _handle_edit_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     task = await asyncio.to_thread(update_task_by_id, str(update.effective_user.id), task_id, _task_updates(text, parsed))
     context.user_data.pop(EDITING_TASK_KEY, None)
     if not task:
-        await update.message.reply_text("That task is already done or no longer available.", reply_markup=_main_menu_keyboard())
+        await update.message.reply_text("That task is already done or no longer available.", reply_markup=_home_buttons())
         return True
-    await update.message.reply_text(_task_card(task, local_timezone, "Updated", "✅"), reply_markup=_main_menu_keyboard())
-    await update.message.reply_text("Task actions", reply_markup=_task_buttons(task))
+    await update.message.reply_text(_task_card(task, local_timezone, "Updated", "✅"), reply_markup=_task_buttons(task))
     return True
 
 
 async def _handle_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> bool:
     if text == MENU_BACK:
         context.user_data.pop(EDITING_TASK_KEY, None)
-        await update.message.reply_text("↩️ Back to Atlas Life OS", reply_markup=_main_menu_keyboard())
+        await update.message.reply_text("↩️ Back to Atlas Life OS", reply_markup=_home_buttons())
         return True
     if text == MENU_CURRENT_TASKS:
         context.user_data.pop(EDITING_TASK_KEY, None)
@@ -300,7 +297,7 @@ async def _handle_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         return True
     if text == MENU_UPDATE_TIME:
         context.user_data.pop(EDITING_TASK_KEY, None)
-        await update.message.reply_text("📍 Tap the location button below to update local time.", reply_markup=_main_menu_keyboard())
+        await update.message.reply_text("📍 Tap the location button below to update local time.", reply_markup=_location_keyboard())
         return True
     return False
 
@@ -319,18 +316,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             return
         parsed = await parse_task(text, local_timezone)
         task = await asyncio.to_thread(create_task, _task_payload(update, "text", text, None, parsed))
-        await update.message.reply_text(_task_card(task, local_timezone, "Saved", "✅"), reply_markup=_main_menu_keyboard())
-        await update.message.reply_text("Task actions", reply_markup=_task_buttons(task))
+        await update.message.reply_text(_task_card(task, local_timezone, "Saved", "✅"), reply_markup=_task_buttons(task))
     except Exception:
         logger.exception("Failed to handle text message")
-        await update.message.reply_text("I could not save that task. Please try again.", reply_markup=_main_menu_keyboard())
+        await update.message.reply_text("I could not save that task. Please try again.", reply_markup=_home_buttons())
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         transcription = await transcribe_voice_note(update.message.voice)
     except VoiceTranscriptionError as exc:
-        await update.message.reply_text(str(exc), reply_markup=_main_menu_keyboard())
+        await update.message.reply_text(str(exc), reply_markup=_home_buttons())
         return
 
     try:
@@ -341,11 +337,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             return
         parsed = await parse_task(transcription, local_timezone)
         task = await asyncio.to_thread(create_task, _task_payload(update, "voice", "", transcription, parsed))
-        await update.message.reply_text(_task_card(task, local_timezone, "Saved", "✅"), reply_markup=_main_menu_keyboard())
-        await update.message.reply_text("Task actions", reply_markup=_task_buttons(task))
+        await update.message.reply_text(_task_card(task, local_timezone, "Saved", "✅"), reply_markup=_task_buttons(task))
     except Exception:
         logger.exception("Failed to handle voice task")
-        await update.message.reply_text("I transcribed the voice note but could not save it as a task. Please try again.", reply_markup=_main_menu_keyboard())
+        await update.message.reply_text("I transcribed the voice note but could not save it as a task. Please try again.", reply_markup=_home_buttons())
 
 
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -355,9 +350,20 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user_id = str(query.from_user.id)
     local_timezone = await asyncio.to_thread(get_user_timezone, user_id)
 
+    if data == "home":
+        context.user_data.pop(EDITING_TASK_KEY, None)
+        await query.edit_message_text(await _home_message(user_id), reply_markup=_home_buttons())
+        return
+
     if data == "cancel_edit":
         context.user_data.pop(EDITING_TASK_KEY, None)
-        await query.edit_message_text("↩️ Back to Atlas Life OS", reply_markup=_home_buttons())
+        await query.edit_message_text(await _home_message(user_id), reply_markup=_home_buttons())
+        return
+
+    if data == "time:update":
+        context.user_data.pop(EDITING_TASK_KEY, None)
+        await query.edit_message_text("📍 Share your location to update local time.", reply_markup=_home_buttons())
+        await query.message.reply_text("Location update", reply_markup=_location_keyboard())
         return
 
     if data == "tasks:pending":
