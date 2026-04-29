@@ -13,6 +13,7 @@ from db import (
     complete_task_by_number,
     create_task,
     delete_task_by_number,
+    ensure_schema,
     list_overdue_tasks,
     list_pending_tasks,
     list_today_tasks,
@@ -22,8 +23,10 @@ from reminders import reminder_worker
 from voice import VoiceTranscriptionError, transcribe_voice_note
 
 
+APP_NAME = "Atlas Life OS"
+
 logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s %(message)s", level=logging.INFO)
-logger = logging.getLogger("forwardtask")
+logger = logging.getLogger("atlas_life_os")
 
 REMINDER_STOP_EVENT: asyncio.Event | None = None
 REMINDER_TASK: asyncio.Task | None = None
@@ -70,7 +73,7 @@ def _task_payload(update: Update, source_type: str, raw_input: str, transcribed_
 
 def _confirmation(source_label: str, source_text: str, task: dict[str, Any]) -> str:
     return (
-        "Task saved\n\n"
+        "Task saved in Atlas Life OS\n\n"
         f"{source_label}: {source_text}\n"
         f"Title: {task['title']}\n"
         f"Due: {_format_due(task.get('due_at'))}\n"
@@ -81,7 +84,7 @@ def _confirmation(source_label: str, source_text: str, task: dict[str, Any]) -> 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "ForwardTask is ready. Send me a task as text or a voice note, and I will save it with a category, priority, and due date when I can find one."
+        f"{APP_NAME} is ready. Send me a task as text or a voice note, and I will save it with a category, priority, and due date when I can find one."
     )
 
 
@@ -175,6 +178,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def on_startup(application: Application) -> None:
     global REMINDER_STOP_EVENT, REMINDER_TASK
+    await asyncio.to_thread(ensure_schema)
+    logger.info("Database schema is ready")
     REMINDER_STOP_EVENT = asyncio.Event()
     REMINDER_TASK = asyncio.create_task(reminder_worker(application, REMINDER_STOP_EVENT))
 
@@ -208,7 +213,7 @@ def build_application() -> Application:
 
 def main() -> None:
     application = build_application()
-    logger.info("Starting ForwardTask with Telegram long polling")
+    logger.info("Starting %s with Telegram long polling", APP_NAME)
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
