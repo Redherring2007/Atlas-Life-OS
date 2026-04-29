@@ -22,6 +22,8 @@ CATEGORIES = {
 }
 PRIORITIES = {"low", "medium", "high"}
 
+TIME_WORDS = r"(?:today|tomorrow|tonight|morning|afternoon|evening|monday|tuesday|wednesday|thursday|friday|saturday|sunday|am|pm|a\.m\.|p\.m\.|minutes?|hours?|days?|weeks?)"
+
 
 @dataclass(frozen=True)
 class ParsedTask:
@@ -48,17 +50,27 @@ def _dateparser_settings(local_timezone: str) -> dict[str, Any]:
     }
 
 
+def _normalize_time_text(text: str) -> str:
+    normalized = re.sub(r"\b(\d{1,2})(\d{2})\s*([ap])\.?m\.?\b", r"\1:\2 \3m", text, flags=re.IGNORECASE)
+    normalized = re.sub(r"\b(\d{1,2})\s*([ap])\.?m\.?\b", r"\1 \2m", normalized, flags=re.IGNORECASE)
+    return normalized
+
+
 def _clean_title(text: str) -> str:
-    title = re.sub(r"\s+", " ", text).strip(" .")
+    title = _normalize_time_text(text)
+    title = re.sub(r"\b(?:remind me to|remind me|remember to|please remind me to|please remind me|i need to|need to|can you remind me to)\b", "", title, flags=re.IGNORECASE)
+    title = re.sub(rf"\b(?:at|by|before|after|on|in)\s+[^,.!?]*(?:{TIME_WORDS}|\d{{1,2}}(?::\d{{2}})?\s*(?:am|pm))\b", "", title, flags=re.IGNORECASE)
+    title = re.sub(r"\s+", " ", title).strip(" .,-")
     return title[:240] or "Untitled task"
 
 
 def _fallback_due_at(text: str, local_timezone: str) -> str | None:
     settings = _dateparser_settings(local_timezone)
-    matches = search_dates(text, settings=settings)
+    normalized = _normalize_time_text(text)
+    matches = search_dates(normalized, settings=settings)
     if matches:
         return _utc_iso(matches[-1][1])
-    parsed = dateparser.parse(text, settings=settings)
+    parsed = dateparser.parse(normalized, settings=settings)
     return _utc_iso(parsed)
 
 
@@ -87,11 +99,12 @@ def _fallback_priority(text: str) -> str:
 
 
 def fallback_parse_task(text: str, local_timezone: str) -> ParsedTask:
+    normalized = _normalize_time_text(text)
     return ParsedTask(
-        title=_clean_title(text),
-        due_at=_fallback_due_at(text, local_timezone),
-        category=_fallback_category(text),
-        priority=_fallback_priority(text),
+        title=_clean_title(normalized),
+        due_at=_fallback_due_at(normalized, local_timezone),
+        category=_fallback_category(normalized),
+        priority=_fallback_priority(normalized),
     )
 
 
@@ -100,7 +113,7 @@ def _validate_openai_payload(payload: dict[str, Any], original: str, local_timez
     due_at_value = payload.get("due_at")
     due_at = None
     if due_at_value:
-        parsed = dateparser.parse(str(due_at_value), settings=_dateparser_settings(local_timezone))
+        parsed = dateparser.parse(_normalize_time_text(str(due_at_value)), settings=_dateparser_settings(local_timezone))
         due_at = _utc_iso(parsed)
     category = str(payload.get("category") or "task")
     priority = str(payload.get("priority") or "medium")
@@ -124,6 +137,7 @@ async def _openai_parse_task(text: str, local_timezone: str) -> ParsedTask:
                 "content": (
                     "You convert short user messages into strict JSON tasks. "
                     f"Interpret relative dates and times in the user's local timezone: {local_timezone}. "
+                    "If the input is a noisy voice transcript, infer the most likely clean task title. "
                     "Return only keys: title, due_at, category, priority. "
                     "due_at must be ISO 8601 with timezone or null. "
                     "category must be one of task, reminder, payment_follow_up, "
@@ -131,7 +145,7 @@ async def _openai_parse_task(text: str, local_timezone: str) -> ParsedTask:
                     "priority must be low, medium, or high."
                 ),
             },
-            {"role": "user", "content": text},
+            {"role": "user", "content": _normalize_time_text(text)},
         ],
         temperature=0,
     )
