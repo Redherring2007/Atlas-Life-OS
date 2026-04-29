@@ -18,6 +18,12 @@ create table if not exists public.tasks (
     completed_at timestamptz null
 );
 
+create table if not exists public.user_settings (
+    telegram_user_id text primary key,
+    timezone text not null,
+    updated_at timestamptz default now()
+);
+
 create or replace function public.set_updated_at()
 returns trigger as $$
 begin
@@ -29,6 +35,12 @@ $$ language plpgsql;
 drop trigger if exists tasks_set_updated_at on public.tasks;
 create trigger tasks_set_updated_at
 before update on public.tasks
+for each row
+execute function public.set_updated_at();
+
+drop trigger if exists user_settings_set_updated_at on public.user_settings;
+create trigger user_settings_set_updated_at
+before update on public.user_settings
 for each row
 execute function public.set_updated_at();
 
