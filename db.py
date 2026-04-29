@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import psycopg
 from psycopg.rows import dict_row
@@ -134,9 +135,10 @@ def list_pending_tasks(telegram_user_id: str) -> list[dict[str, Any]]:
 
 
 def list_today_tasks(telegram_user_id: str) -> list[dict[str, Any]]:
-    now = datetime.now(timezone.utc)
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    end = start.replace(hour=23, minute=59, second=59, microsecond=999999)
+    local_tz = ZoneInfo(config.local_timezone)
+    now = datetime.now(local_tz)
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+    end = (now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)).astimezone(timezone.utc)
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -146,7 +148,7 @@ def list_today_tasks(telegram_user_id: str) -> list[dict[str, Any]]:
                 where telegram_user_id = %s
                   and status = 'pending'
                   and due_at >= %s
-                  and due_at <= %s
+                  and due_at < %s
                 order by {TASK_ORDER}
                 """,
                 (str(telegram_user_id), start, end),
@@ -185,6 +187,10 @@ def complete_task_by_number(telegram_user_id: str, task_number: int) -> dict[str
     task = _task_by_number(telegram_user_id, task_number)
     if not task:
         return None
+    return complete_task_by_id(telegram_user_id, task["id"])
+
+
+def complete_task_by_id(telegram_user_id: str, task_id: str) -> dict[str, Any] | None:
     now = datetime.now(timezone.utc)
     with _connect() as conn:
         with conn.cursor() as cur:
@@ -192,10 +198,26 @@ def complete_task_by_number(telegram_user_id: str, task_number: int) -> dict[str
                 """
                 update tasks
                 set status = 'done', completed_at = %s
-                where id = %s
+                where id = %s and telegram_user_id = %s and status = 'pending'
                 returning *
                 """,
-                (now, task["id"]),
+                (now, task_id, str(telegram_user_id)),
+            )
+            return _serialize_task(cur.fetchone())
+
+
+def snooze_task_by_id(telegram_user_id: str, task_id: str, minutes: int = 20) -> dict[str, Any] | None:
+    due_at = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                update tasks
+                set due_at = %s, reminder_sent = false
+                where id = %s and telegram_user_id = %s and status = 'pending'
+                returning *
+                """,
+                (due_at, task_id, str(telegram_user_id)),
             )
             return _serialize_task(cur.fetchone())
 
