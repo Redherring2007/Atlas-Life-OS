@@ -77,6 +77,10 @@ def _edit_menu_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
+def _edit_cancel_buttons() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Back", callback_data="cancel_edit")]])
+
+
 def _task_card(task: dict[str, Any], local_timezone: str, heading: str = "Task", icon: str = "📝") -> str:
     return (
         f"{icon} {heading}\n\n"
@@ -287,12 +291,15 @@ async def _handle_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         await update.message.reply_text("↩️ Back to Atlas Life OS", reply_markup=_main_menu_keyboard())
         return True
     if text == MENU_CURRENT_TASKS:
+        context.user_data.pop(EDITING_TASK_KEY, None)
         await tasks_command(update, context)
         return True
     if text == MENU_DUE_TODAY:
+        context.user_data.pop(EDITING_TASK_KEY, None)
         await today_command(update, context)
         return True
     if text == MENU_UPDATE_TIME:
+        context.user_data.pop(EDITING_TASK_KEY, None)
         await update.message.reply_text("📍 Tap the location button below to update local time.", reply_markup=_main_menu_keyboard())
         return True
     return False
@@ -348,7 +355,13 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user_id = str(query.from_user.id)
     local_timezone = await asyncio.to_thread(get_user_timezone, user_id)
 
+    if data == "cancel_edit":
+        context.user_data.pop(EDITING_TASK_KEY, None)
+        await query.edit_message_text("↩️ Back to Atlas Life OS", reply_markup=_home_buttons())
+        return
+
     if data == "tasks:pending":
+        context.user_data.pop(EDITING_TASK_KEY, None)
         tasks = await asyncio.to_thread(list_pending_tasks, user_id)
         await query.edit_message_text(
             _task_list_message(tasks, "Current Tasks", "📋 No current tasks.", local_timezone),
@@ -357,6 +370,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     if data == "tasks:today":
+        context.user_data.pop(EDITING_TASK_KEY, None)
         tasks = await asyncio.to_thread(list_today_tasks, user_id)
         await query.edit_message_text(
             _task_list_message(tasks, "Due Today", "📅 Nothing due today.", local_timezone),
@@ -367,8 +381,10 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     action, _, task_id = data.partition(":")
     if action == "edit" and task_id:
         context.user_data[EDITING_TASK_KEY] = task_id
-        await query.edit_message_text("✏️ Edit task\n\nSend the corrected task as text or voice. Include the due time if it needs one.")
-        await query.message.reply_text("Editing mode", reply_markup=_edit_menu_keyboard())
+        await query.edit_message_text(
+            "✏️ Edit task\n\nSend the corrected task as text or voice. Include the due time if it needs one.",
+            reply_markup=_edit_cancel_buttons(),
+        )
         return
 
     if action == "done" and task_id:
@@ -378,7 +394,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await query.edit_message_text(f"✅ Done\n\n{task['title']}", reply_markup=_home_buttons())
         else:
             await query.edit_message_text("That task is already done or no longer available.", reply_markup=_home_buttons())
-        await query.message.reply_text("Menu", reply_markup=_main_menu_keyboard())
         return
 
     if action == "snooze20" and task_id:
@@ -387,7 +402,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await query.edit_message_text(_task_card(task, local_timezone, "Remind again", "⏰"), reply_markup=_task_buttons(task))
         else:
             await query.edit_message_text("That task is already done or no longer available.", reply_markup=_home_buttons())
-        await query.message.reply_text("Menu", reply_markup=_main_menu_keyboard())
 
 
 async def on_startup(application: Application) -> None:
