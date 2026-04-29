@@ -12,9 +12,56 @@ from config import config
 
 TASK_ORDER = "due_at ASC NULLS LAST, created_at DESC"
 
+SCHEMA_SQL = """
+create extension if not exists pgcrypto;
+
+create table if not exists public.tasks (
+    id uuid primary key default gen_random_uuid(),
+    telegram_user_id text not null,
+    telegram_chat_id text not null,
+    source_type text not null check (source_type in ('text', 'voice')),
+    raw_input text,
+    transcribed_text text,
+    title text not null,
+    due_at timestamptz null,
+    category text not null,
+    priority text not null,
+    status text default 'pending',
+    reminder_sent boolean default false,
+    created_at timestamptz default now(),
+    updated_at timestamptz default now(),
+    completed_at timestamptz null
+);
+
+create or replace function public.set_updated_at()
+returns trigger as $$
+begin
+    new.updated_at = now();
+    return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists tasks_set_updated_at on public.tasks;
+create trigger tasks_set_updated_at
+before update on public.tasks
+for each row
+execute function public.set_updated_at();
+
+create index if not exists tasks_telegram_user_status_idx on public.tasks (telegram_user_id, status);
+create index if not exists tasks_due_at_idx on public.tasks (due_at);
+create index if not exists tasks_reminder_sent_status_idx on public.tasks (reminder_sent, status);
+create index if not exists tasks_created_at_idx on public.tasks (created_at);
+"""
+
 
 def _connect() -> psycopg.Connection:
     return psycopg.connect(config.database_url, row_factory=dict_row)
+
+
+def ensure_schema() -> None:
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(SCHEMA_SQL)
 
 
 def _serialize_value(value: Any) -> Any:
