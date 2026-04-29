@@ -153,6 +153,31 @@ def create_task(task: dict[str, Any]) -> dict[str, Any]:
             return _serialize_task(cur.fetchone())
 
 
+def update_task_by_id(telegram_user_id: str, task_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                update tasks
+                set raw_input = %(raw_input)s,
+                    transcribed_text = %(transcribed_text)s,
+                    title = %(title)s,
+                    due_at = %(due_at)s,
+                    category = %(category)s,
+                    priority = %(priority)s,
+                    reminder_sent = false
+                where id = %(id)s and telegram_user_id = %(telegram_user_id)s and status = 'pending'
+                returning *
+                """,
+                {
+                    "id": task_id,
+                    "telegram_user_id": str(telegram_user_id),
+                    **updates,
+                },
+            )
+            return _serialize_task(cur.fetchone())
+
+
 def list_pending_tasks(telegram_user_id: str) -> list[dict[str, Any]]:
     with _connect() as conn:
         with conn.cursor() as cur:
