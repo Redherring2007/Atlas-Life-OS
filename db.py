@@ -153,6 +153,20 @@ def create_task(task: dict[str, Any]) -> dict[str, Any]:
             return _serialize_task(cur.fetchone())
 
 
+def get_task_by_id(telegram_user_id: str, task_id: str) -> dict[str, Any] | None:
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select *
+                from tasks
+                where id = %s and telegram_user_id = %s and status = 'pending'
+                """,
+                (task_id, str(telegram_user_id)),
+            )
+            return _serialize_task(cur.fetchone())
+
+
 def update_task_by_id(telegram_user_id: str, task_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
     with _connect() as conn:
         with conn.cursor() as cur:
@@ -174,6 +188,28 @@ def update_task_by_id(telegram_user_id: str, task_id: str, updates: dict[str, An
                     "telegram_user_id": str(telegram_user_id),
                     **updates,
                 },
+            )
+            return _serialize_task(cur.fetchone())
+
+
+def update_task_fields_by_id(telegram_user_id: str, task_id: str, fields: dict[str, Any]) -> dict[str, Any] | None:
+    assignments = []
+    values: dict[str, Any] = {"id": task_id, "telegram_user_id": str(telegram_user_id)}
+    for key, value in fields.items():
+        assignments.append(f"{key} = %({key})s")
+        values[key] = value
+    if "due_at" in fields:
+        assignments.append("reminder_sent = false")
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                update tasks
+                set {", ".join(assignments)}
+                where id = %(id)s and telegram_user_id = %(telegram_user_id)s and status = 'pending'
+                returning *
+                """,
+                values,
             )
             return _serialize_task(cur.fetchone())
 
