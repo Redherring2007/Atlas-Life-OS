@@ -301,6 +301,21 @@ def complete_task_by_id(telegram_user_id: str, task_id: str) -> dict[str, Any] |
             return _serialize_task(cur.fetchone())
 
 
+def restore_task_by_id(telegram_user_id: str, task_id: str) -> dict[str, Any] | None:
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                update tasks
+                set status = 'pending', completed_at = null
+                where id = %s and telegram_user_id = %s and status = 'done'
+                returning *
+                """,
+                (task_id, str(telegram_user_id)),
+            )
+            return _serialize_task(cur.fetchone())
+
+
 def snooze_task_by_id(telegram_user_id: str, task_id: str, minutes: int = 20) -> dict[str, Any] | None:
     due_at = datetime.now(timezone.utc) + timedelta(minutes=minutes)
     with _connect() as conn:
