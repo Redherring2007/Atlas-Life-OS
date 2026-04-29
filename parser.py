@@ -24,6 +24,7 @@ CATEGORIES = {
 PRIORITIES = {"low", "medium", "high"}
 
 TIME_WORDS = r"(?:today|tomorrow|tonight|morning|afternoon|evening|monday|tuesday|wednesday|thursday|friday|saturday|sunday|am|pm|a\.m\.|p\.m\.|minutes?|hours?|days?|weeks?)"
+DATE_CONTEXT = r"\b(?:today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next week|in \d+\s+(?:minutes?|hours?|days?|weeks?))\b"
 TIME_CUE = r"(?:at|by|for|around|about|before|after)"
 MERIDIEM = r"(?:[ap]\.?\s?m\.?)"
 
@@ -57,6 +58,19 @@ def _normalize_time_text(text: str) -> str:
     normalized = re.sub(r"\b(\d{1,2})(\d{2})\s*([ap])\.?m\.?\b", r"\1:\2 \3m", text, flags=re.IGNORECASE)
     normalized = re.sub(r"\b(\d{1,2})\s*([ap])\.?\s*m\.?\b", r"\1 \2m", normalized, flags=re.IGNORECASE)
     return normalized
+
+
+def _has_date_context(text: str) -> bool:
+    return bool(re.search(DATE_CONTEXT, text, flags=re.IGNORECASE))
+
+
+def _dateparser_due_at(text: str, local_timezone: str) -> str | None:
+    settings = _dateparser_settings(local_timezone)
+    matches = search_dates(text, settings=settings)
+    if matches:
+        return _utc_iso(matches[-1][1])
+    parsed = dateparser.parse(text, settings=settings)
+    return _utc_iso(parsed)
 
 
 def _normalized_meridiem(value: str | None) -> str | None:
@@ -123,16 +137,15 @@ def _clean_title(text: str) -> str:
 
 
 def _fallback_due_at(text: str, local_timezone: str) -> str | None:
-    settings = _dateparser_settings(local_timezone)
     normalized = _normalize_time_text(text)
+    if _has_date_context(normalized):
+        parsed_due = _dateparser_due_at(normalized, local_timezone)
+        if parsed_due:
+            return parsed_due
     clock_due = _clock_due_at(normalized, local_timezone)
     if clock_due:
         return clock_due
-    matches = search_dates(normalized, settings=settings)
-    if matches:
-        return _utc_iso(matches[-1][1])
-    parsed = dateparser.parse(normalized, settings=settings)
-    return _utc_iso(parsed)
+    return _dateparser_due_at(normalized, local_timezone)
 
 
 def _fallback_category(text: str) -> str:
@@ -171,15 +184,13 @@ def fallback_parse_task(text: str, local_timezone: str) -> ParsedTask:
 
 def _validate_openai_payload(payload: dict[str, Any], original: str, local_timezone: str) -> ParsedTask:
     title = _clean_title(str(payload.get("title") or original))
-    explicit_due_at = _clock_due_at(_normalize_time_text(original), local_timezone)
+    normalized_original = _normalize_time_text(original)
+    explicit_due_at = _fallback_due_at(normalized_original, local_timezone)
     due_at_value = payload.get("due_at")
     due_at = explicit_due_at
     if due_at_value and not due_at:
         due_at_text = _normalize_time_text(str(due_at_value))
-        due_at = _clock_due_at(due_at_text, local_timezone)
-        if not due_at:
-            parsed = dateparser.parse(due_at_text, settings=_dateparser_settings(local_timezone))
-            due_at = _utc_iso(parsed)
+        due_at = _fallback_due_at(due_at_text, local_timezone)
     category = str(payload.get("category") or "task")
     priority = str(payload.get("priority") or "medium")
     if category not in CATEGORIES:
