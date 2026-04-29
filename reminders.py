@@ -23,17 +23,22 @@ def _format_due(value: str | None, local_timezone: str) -> str:
 
 def _reminder_message(task: dict) -> str:
     local_timezone = task.get("user_timezone") or config.local_timezone
-    return f"Reminder\n\n{task['title']}\n\nDue\n{_format_due(task.get('due_at'), local_timezone)}"
+    return (
+        f"⏰ Reminder\n\n"
+        f"{task['title']}\n\n"
+        f"Due\n"
+        f"{_format_due(task.get('due_at'), local_timezone)}"
+    )
 
 
 def _reminder_buttons(task: dict) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("Mark done", callback_data=f"done:{task['id']}"),
-                InlineKeyboardButton("Remind in 20 min", callback_data=f"snooze20:{task['id']}"),
+                InlineKeyboardButton("✅ Done", callback_data=f"done:{task['id']}"),
+                InlineKeyboardButton("⏰ 20 min", callback_data=f"snooze20:{task['id']}"),
             ],
-            [InlineKeyboardButton("View current tasks", callback_data="tasks:pending")],
+            [InlineKeyboardButton("📋 View tasks", callback_data="tasks:pending")],
         ]
     )
 
