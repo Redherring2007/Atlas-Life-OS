@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application
 
 from config import config
@@ -11,12 +13,28 @@ from db import fetch_due_reminder_tasks, mark_reminder_sent
 
 def _format_due(value: str | None) -> str:
     if not value:
-        return "No due date"
+        return "No due time set"
     try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
-        return dt.strftime("%Y-%m-%d %H:%M UTC")
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(ZoneInfo(config.local_timezone))
+        return dt.strftime("%a %d %b, %I:%M %p").lstrip("0")
     except ValueError:
         return value
+
+
+def _reminder_message(task: dict) -> str:
+    return f"Reminder\n\n{task['title']}\n\nDue\n{_format_due(task.get('due_at'))}"
+
+
+def _reminder_buttons(task: dict) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Mark done", callback_data=f"done:{task['id']}"),
+                InlineKeyboardButton("Remind in 20 min", callback_data=f"snooze20:{task['id']}"),
+            ],
+            [InlineKeyboardButton("View current tasks", callback_data="tasks:pending")],
+        ]
+    )
 
 
 async def reminder_worker(application: Application, stop_event: asyncio.Event) -> None:
@@ -24,15 +42,12 @@ async def reminder_worker(application: Application, stop_event: asyncio.Event) -
         try:
             tasks = await asyncio.to_thread(fetch_due_reminder_tasks)
             for task in tasks:
-                message = (
-                    "Reminder due\n\n"
-                    f"{task['title']}\n"
-                    f"Due: {_format_due(task.get('due_at'))}\n"
-                    f"Category: {task.get('category', 'task')}\n"
-                    f"Priority: {task.get('priority', 'medium')}"
-                )
                 try:
-                    await application.bot.send_message(chat_id=task["telegram_chat_id"], text=message)
+                    await application.bot.send_message(
+                        chat_id=task["telegram_chat_id"],
+                        text=_reminder_message(task),
+                        reply_markup=_reminder_buttons(task),
+                    )
                     await asyncio.to_thread(mark_reminder_sent, task["id"])
                 except Exception:
                     continue
