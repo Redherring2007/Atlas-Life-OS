@@ -39,18 +39,22 @@ def _utc_iso(dt: datetime | None) -> str | None:
     return dt.astimezone(timezone.utc).isoformat()
 
 
+def _dateparser_settings() -> dict[str, Any]:
+    return {
+        "PREFER_DATES_FROM": "future",
+        "RETURN_AS_TIMEZONE_AWARE": True,
+        "TIMEZONE": config.local_timezone,
+        "TO_TIMEZONE": "UTC",
+    }
+
+
 def _clean_title(text: str) -> str:
     title = re.sub(r"\s+", " ", text).strip(" .")
     return title[:240] or "Untitled task"
 
 
 def _fallback_due_at(text: str) -> str | None:
-    settings = {
-        "PREFER_DATES_FROM": "future",
-        "RETURN_AS_TIMEZONE_AWARE": True,
-        "TIMEZONE": "UTC",
-        "TO_TIMEZONE": "UTC",
-    }
+    settings = _dateparser_settings()
     matches = search_dates(text, settings=settings)
     if matches:
         return _utc_iso(matches[-1][1])
@@ -96,7 +100,7 @@ def _validate_openai_payload(payload: dict[str, Any], original: str) -> ParsedTa
     due_at_value = payload.get("due_at")
     due_at = None
     if due_at_value:
-        parsed = dateparser.parse(str(due_at_value), settings={"RETURN_AS_TIMEZONE_AWARE": True, "TIMEZONE": "UTC", "TO_TIMEZONE": "UTC"})
+        parsed = dateparser.parse(str(due_at_value), settings=_dateparser_settings())
         due_at = _utc_iso(parsed)
     category = str(payload.get("category") or "task")
     priority = str(payload.get("priority") or "medium")
@@ -119,6 +123,7 @@ async def _openai_parse_task(text: str) -> ParsedTask:
                 "role": "system",
                 "content": (
                     "You convert short user messages into strict JSON tasks. "
+                    f"Interpret relative dates and times in the user's local timezone: {config.local_timezone}. "
                     "Return only keys: title, due_at, category, priority. "
                     "due_at must be ISO 8601 with timezone or null. "
                     "category must be one of task, reminder, payment_follow_up, "
