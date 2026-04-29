@@ -8,6 +8,8 @@ It uses Telegram long polling, Neon Postgres for storage, `dateparser` for local
 
 - Text message to parsed task
 - Voice note download, ffmpeg conversion, local Whisper transcription, and parsed task
+- Clean task cards with local due times
+- App-style Telegram buttons for current tasks, due today, mark done, and remind again in 20 minutes
 - Neon Postgres task storage
 - Automatic database schema setup on app startup
 - One-time reminders using `reminder_sent`
@@ -24,6 +26,7 @@ DATABASE_URL=postgresql://user:password@host/database?sslmode=require
 OPENAI_API_KEY=
 WHISPER_MODEL_SIZE=tiny
 REMINDER_CHECK_SECONDS=60
+LOCAL_TIMEZONE=Asia/Dubai
 ```
 
 Required:
@@ -36,6 +39,7 @@ Optional:
 - `OPENAI_API_KEY`: enables OpenAI JSON parsing. If missing, rate-limited, or failing, Atlas Life OS uses the local fallback parser.
 - `WHISPER_MODEL_SIZE`: defaults to `tiny`.
 - `REMINDER_CHECK_SECONDS`: defaults to `60`.
+- `LOCAL_TIMEZONE`: defaults to `Asia/Dubai`. Due times are parsed and displayed in this timezone.
 
 ## Create a Telegram Bot
 
@@ -54,73 +58,6 @@ Atlas Life OS creates the required `tasks` table and indexes automatically on st
 
 Your database URL contains credentials. Keep it private and do not expose it in frontend code.
 
-## Install ffmpeg Locally
-
-Voice notes require `ffmpeg`.
-
-Linux:
-
-```sh
-sudo apt-get update
-sudo apt-get install ffmpeg
-```
-
-macOS:
-
-```sh
-brew install ffmpeg
-```
-
-Windows:
-
-```powershell
-winget install Gyan.FFmpeg
-```
-
-After installing on Windows, restart the terminal so `ffmpeg` is available on `PATH`.
-
-## Local Python Run
-
-Create and activate a virtual environment, then install dependencies:
-
-```sh
-python -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-python bot.py
-```
-
-Windows PowerShell:
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python bot.py
-```
-
-You can also use:
-
-```sh
-sh start.sh
-```
-
-or on Windows:
-
-```bat
-start.bat
-```
-
-## Docker Run
-
-Create `.env`, then run:
-
-```sh
-docker-compose up --build
-```
-
-The Docker image installs `ffmpeg` and runs `python bot.py`.
-
 ## Railway Deployment
 
 Railway deployment is optional. This project includes:
@@ -132,6 +69,14 @@ Railway deployment is optional. This project includes:
 Set the same environment variables in Railway. No webhook domain is required because the bot uses long polling.
 
 On startup, Atlas Life OS ensures the database schema exists before it begins processing Telegram updates. If voice notes transcribe but fail to save, check that `DATABASE_URL` points to the intended Neon database and that the latest deployment includes the startup schema fix.
+
+## Task App Flow
+
+Open `/start` to see the main Atlas Life OS screen with counts and buttons. You do not need a button for new tasks: speak or type into Telegram and Atlas will capture it.
+
+Saved tasks are read back as a clean card with the tidied title and local due time. Categories and priorities are kept internally but not shown under the task.
+
+When a reminder is due, Atlas sends a reminder card with buttons to mark it done or remind again in 20 minutes.
 
 ## Voice Transcription
 
@@ -166,7 +111,6 @@ due_at ASC NULLS LAST, created_at DESC
 
 ## Known Limitations
 
-- Reminder times are stored and displayed in UTC.
 - The fallback parser is keyword-based and intentionally simple.
 - Local Whisper transcription can be slow on small CPUs.
 - Neon free tier limits apply.
