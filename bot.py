@@ -113,13 +113,6 @@ def _task_payload(update: Update, source_type: str, raw_input: str, transcribed_
     }
 
 
-def _confirmation(source_text: str, task: dict[str, Any], local_timezone: str) -> str:
-    message = _task_card(task, local_timezone, "Saved")
-    if source_text and source_text.strip() != task["title"].strip():
-        message += f"\n\nHeard\n{source_text.strip()}"
-    return message
-
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
     local_timezone = await asyncio.to_thread(get_user_timezone, user_id)
@@ -235,7 +228,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         local_timezone = await asyncio.to_thread(get_user_timezone, str(update.effective_user.id))
         parsed = await parse_task(text, local_timezone)
         task = await asyncio.to_thread(create_task, _task_payload(update, "text", text, None, parsed))
-        await update.message.reply_text(_confirmation(text, task, local_timezone), reply_markup=_task_buttons(task))
+        await update.message.reply_text(_task_card(task, local_timezone, "Saved"), reply_markup=_task_buttons(task))
     except Exception:
         logger.exception("Failed to handle text message")
         await update.message.reply_text("I could not save that task. Please try again.")
@@ -252,7 +245,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         local_timezone = await asyncio.to_thread(get_user_timezone, str(update.effective_user.id))
         parsed = await parse_task(transcription, local_timezone)
         task = await asyncio.to_thread(create_task, _task_payload(update, "voice", "", transcription, parsed))
-        await update.message.reply_text(_confirmation(transcription, task, local_timezone), reply_markup=_task_buttons(task))
+        await update.message.reply_text(_task_card(task, local_timezone, "Saved"), reply_markup=_task_buttons(task))
     except Exception:
         logger.exception("Failed to handle voice task")
         await update.message.reply_text("I transcribed the voice note but could not save it as a task. Please try again.")
