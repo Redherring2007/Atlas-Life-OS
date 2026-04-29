@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from config import config
 from db import (
+    complete_task_by_id,
     complete_task_by_number,
     create_task,
     delete_task_by_number,
@@ -17,6 +19,7 @@ from db import (
     list_overdue_tasks,
     list_pending_tasks,
     list_today_tasks,
+    snooze_task_by_id,
 )
 from parser import ParsedTask, parse_task
 from reminders import reminder_worker
@@ -34,23 +37,50 @@ REMINDER_TASK: asyncio.Task | None = None
 
 def _format_due(value: str | None) -> str:
     if not value:
-        return "No due date"
+        return "No due time set"
     try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
-        return dt.strftime("%Y-%m-%d %H:%M UTC")
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(ZoneInfo(config.local_timezone))
+        return dt.strftime("%a %d %b, %I:%M %p").lstrip("0")
     except ValueError:
         return value
 
 
-def _format_task_line(index: int, task: dict[str, Any]) -> str:
-    due = _format_due(task.get("due_at"))
-    return f"{index}. {task['title']} | Due: {due} | {task['category']} | {task['priority']}"
+def _task_card(task: dict[str, Any], heading: str = "Task") -> str:
+    return f"{heading}\n\n{task['title']}\n\nDue\n{_format_due(task.get('due_at'))}"
 
 
-def _format_task_list(tasks: list[dict[str, Any]], empty_message: str) -> str:
+def _task_buttons(task: dict[str, Any], include_snooze: bool = False) -> InlineKeyboardMarkup:
+    buttons = [[InlineKeyboardButton("Mark done", callback_data=f"done:{task['id']}")]]
+    if include_snooze:
+        buttons[0].append(InlineKeyboardButton("Remind in 20 min", callback_data=f"snooze20:{task['id']}"))
+    buttons.append([InlineKeyboardButton("View current tasks", callback_data="tasks:pending")])
+    return InlineKeyboardMarkup(buttons)
+
+
+def _home_buttons() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("View current tasks", callback_data="tasks:pending")],
+            [InlineKeyboardButton("Due today", callback_data="tasks:today")],
+        ]
+    )
+
+
+def _task_list_message(tasks: list[dict[str, Any]], title: str, empty_message: str) -> str:
     if not tasks:
         return empty_message
-    return "\n".join(_format_task_line(index, task) for index, task in enumerate(tasks, start=1))
+    lines = [title, ""]
+    for index, task in enumerate(tasks, start=1):
+        lines.append(f"{index}. {task['title']}")
+        lines.append(f"   Due: {_format_due(task.get('due_at'))}")
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+def _task_list_buttons(tasks: list[dict[str, Any]]) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(f"Done {index}", callback_data=f"done:{task['id']}")] for index, task in enumerate(tasks[:10], start=1)]
+    rows.append([InlineKeyboardButton("Refresh", callback_data="tasks:pending")])
+    return InlineKeyboardMarkup(rows)
 
 
 def _task_payload(update: Update, source_type: str, raw_input: str, transcribed_text: str | None, parsed: ParsedTask) -> dict[str, Any]:
@@ -71,47 +101,60 @@ def _task_payload(update: Update, source_type: str, raw_input: str, transcribed_
     }
 
 
-def _confirmation(source_label: str, source_text: str, task: dict[str, Any]) -> str:
-    return (
-        "Task saved in Atlas Life OS\n\n"
-        f"{source_label}: {source_text}\n"
-        f"Title: {task['title']}\n"
-        f"Due: {_format_due(task.get('due_at'))}\n"
-        f"Category: {task['category']}\n"
-        f"Priority: {task['priority']}"
-    )
+def _confirmation(source_text: str, task: dict[str, Any]) -> str:
+    message = _task_card(task, "Saved")
+    if source_text and source_text.strip() != task["title"].strip():
+        message += f"\n\nHeard\n{source_text.strip()}"
+    return message
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        f"{APP_NAME} is ready. Send me a task as text or a voice note, and I will save it with a category, priority, and due date when I can find one."
+    user_id = str(update.effective_user.id)
+    pending, today = await asyncio.gather(
+        asyncio.to_thread(list_pending_tasks, user_id),
+        asyncio.to_thread(list_today_tasks, user_id),
     )
+    message = (
+        f"{APP_NAME}\n\n"
+        f"Current tasks: {len(pending)}\n"
+        f"Due today: {len(today)}\n\n"
+        "Speak or type a task whenever you want to capture something."
+    )
+    await update.message.reply_text(message, reply_markup=_home_buttons())
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Commands:\n"
-        "/tasks - list pending tasks\n"
-        "/today - list tasks due today\n"
-        "/overdue - list overdue tasks\n"
+        "/start - open Atlas Life OS\n"
+        "/tasks - view current tasks\n"
+        "/today - view tasks due today\n"
+        "/overdue - view overdue tasks\n"
         "/done <task number> - mark a task done\n"
         "/delete <task number> - delete a task"
     )
 
 
+async def _send_task_list(update: Update, tasks: list[dict[str, Any]], title: str, empty_message: str) -> None:
+    await update.message.reply_text(
+        _task_list_message(tasks, title, empty_message),
+        reply_markup=_task_list_buttons(tasks) if tasks else _home_buttons(),
+    )
+
+
 async def tasks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     tasks = await asyncio.to_thread(list_pending_tasks, str(update.effective_user.id))
-    await update.message.reply_text(_format_task_list(tasks, "No pending tasks."))
+    await _send_task_list(update, tasks, "Current Tasks", "No current tasks.")
 
 
 async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     tasks = await asyncio.to_thread(list_today_tasks, str(update.effective_user.id))
-    await update.message.reply_text(_format_task_list(tasks, "No tasks due today."))
+    await _send_task_list(update, tasks, "Due Today", "Nothing due today.")
 
 
 async def overdue_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     tasks = await asyncio.to_thread(list_overdue_tasks, str(update.effective_user.id))
-    await update.message.reply_text(_format_task_list(tasks, "No overdue tasks."))
+    await _send_task_list(update, tasks, "Overdue", "No overdue tasks.")
 
 
 def _task_number(context: ContextTypes.DEFAULT_TYPE) -> int | None:
@@ -130,9 +173,9 @@ async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     task = await asyncio.to_thread(complete_task_by_number, str(update.effective_user.id), number)
     if not task:
-        await update.message.reply_text("I could not find that pending task number.")
+        await update.message.reply_text("I could not find that current task number.")
         return
-    await update.message.reply_text(f"Done: {task['title']}")
+    await update.message.reply_text(f"Done\n\n{task['title']}", reply_markup=_home_buttons())
 
 
 async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -142,9 +185,9 @@ async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     task = await asyncio.to_thread(delete_task_by_number, str(update.effective_user.id), number)
     if not task:
-        await update.message.reply_text("I could not find that pending task number.")
+        await update.message.reply_text("I could not find that current task number.")
         return
-    await update.message.reply_text(f"Deleted: {task['title']}")
+    await update.message.reply_text(f"Deleted\n\n{task['title']}", reply_markup=_home_buttons())
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -154,7 +197,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     try:
         parsed = await parse_task(text)
         task = await asyncio.to_thread(create_task, _task_payload(update, "text", text, None, parsed))
-        await update.message.reply_text(_confirmation("Input", text, task))
+        await update.message.reply_text(_confirmation(text, task), reply_markup=_task_buttons(task))
     except Exception:
         logger.exception("Failed to handle text message")
         await update.message.reply_text("I could not save that task. Please try again.")
@@ -170,10 +213,49 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     try:
         parsed = await parse_task(transcription)
         task = await asyncio.to_thread(create_task, _task_payload(update, "voice", "", transcription, parsed))
-        await update.message.reply_text(_confirmation("Transcription", transcription, task))
+        await update.message.reply_text(_confirmation(transcription, task), reply_markup=_task_buttons(task))
     except Exception:
         logger.exception("Failed to handle voice task")
         await update.message.reply_text("I transcribed the voice note but could not save it as a task. Please try again.")
+
+
+async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    data = query.data or ""
+    user_id = str(query.from_user.id)
+
+    if data == "tasks:pending":
+        tasks = await asyncio.to_thread(list_pending_tasks, user_id)
+        await query.edit_message_text(
+            _task_list_message(tasks, "Current Tasks", "No current tasks."),
+            reply_markup=_task_list_buttons(tasks) if tasks else _home_buttons(),
+        )
+        return
+
+    if data == "tasks:today":
+        tasks = await asyncio.to_thread(list_today_tasks, user_id)
+        await query.edit_message_text(
+            _task_list_message(tasks, "Due Today", "Nothing due today."),
+            reply_markup=_task_list_buttons(tasks) if tasks else _home_buttons(),
+        )
+        return
+
+    action, _, task_id = data.partition(":")
+    if action == "done" and task_id:
+        task = await asyncio.to_thread(complete_task_by_id, user_id, task_id)
+        if task:
+            await query.edit_message_text(f"Done\n\n{task['title']}", reply_markup=_home_buttons())
+        else:
+            await query.edit_message_text("That task is already done or no longer available.", reply_markup=_home_buttons())
+        return
+
+    if action == "snooze20" and task_id:
+        task = await asyncio.to_thread(snooze_task_by_id, user_id, task_id, 20)
+        if task:
+            await query.edit_message_text(_task_card(task, "Remind again"), reply_markup=_task_buttons(task))
+        else:
+            await query.edit_message_text("That task is already done or no longer available.", reply_markup=_home_buttons())
 
 
 async def on_startup(application: Application) -> None:
@@ -206,6 +288,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("overdue", overdue_command))
     application.add_handler(CommandHandler("done", done_command))
     application.add_handler(CommandHandler("delete", delete_command))
+    application.add_handler(CallbackQueryHandler(handle_button))
     application.add_handler(MessageHandler(filters.VOICE, handle_voice))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     return application
