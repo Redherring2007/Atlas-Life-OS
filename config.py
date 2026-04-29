@@ -14,6 +14,7 @@ class Config:
     openai_api_key: str | None
     whisper_model_size: str
     reminder_check_seconds: int
+    local_timezone: str
 
 
 def _required(name: str) -> str:
@@ -30,6 +31,7 @@ def load_config() -> Config:
         openai_api_key=os.getenv("OPENAI_API_KEY") or None,
         whisper_model_size=os.getenv("WHISPER_MODEL_SIZE", "tiny"),
         reminder_check_seconds=int(os.getenv("REMINDER_CHECK_SECONDS", "60")),
+        local_timezone=os.getenv("LOCAL_TIMEZONE", "Asia/Dubai"),
     )
 
 
