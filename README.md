@@ -1,6 +1,6 @@
-# ForwardTask
+# Atlas Life OS
 
-ForwardTask is a Telegram MVP that turns text messages and voice notes into tasks, reminders, payment follow-ups, lead follow-ups, contract actions, and personal reminders.
+Atlas Life OS is a Telegram-based personal operating system for capturing tasks, reminders, payment follow-ups, lead follow-ups, contract actions, and personal reminders from text messages or voice notes.
 
 It uses Telegram long polling, Neon Postgres for storage, `dateparser` for local parsing, `faster-whisper` for local voice transcription, and optionally OpenAI for stricter task extraction when `OPENAI_API_KEY` is present.
 
@@ -9,6 +9,7 @@ It uses Telegram long polling, Neon Postgres for storage, `dateparser` for local
 - Text message to parsed task
 - Voice note download, ffmpeg conversion, local Whisper transcription, and parsed task
 - Neon Postgres task storage
+- Automatic database schema setup on app startup
 - One-time reminders using `reminder_sent`
 - Commands: `/start`, `/help`, `/tasks`, `/today`, `/overdue`, `/done <n>`, `/delete <n>`
 - No webhook, domain, or paid service required for the default MVP path
@@ -32,7 +33,7 @@ Required:
 
 Optional:
 
-- `OPENAI_API_KEY`: enables OpenAI JSON parsing. If missing or failing, ForwardTask uses the local fallback parser.
+- `OPENAI_API_KEY`: enables OpenAI JSON parsing. If missing, rate-limited, or failing, Atlas Life OS uses the local fallback parser.
 - `WHISPER_MODEL_SIZE`: defaults to `tiny`.
 - `REMINDER_CHECK_SECONDS`: defaults to `60`.
 
@@ -46,10 +47,10 @@ Optional:
 ## Neon Setup
 
 1. Create a free Neon project.
-2. Open the Neon SQL editor.
-3. Paste and run `schema.sql`.
-4. Copy the pooled or direct connection string into `DATABASE_URL`.
-5. Make sure the connection string includes `sslmode=require`.
+2. Copy the pooled or direct connection string into `DATABASE_URL`.
+3. Make sure the connection string includes `sslmode=require`.
+
+Atlas Life OS creates the required `tasks` table and indexes automatically on startup. You can also run `schema.sql` manually in the Neon SQL editor if you want to verify or repair the schema yourself.
 
 Your database URL contains credentials. Keep it private and do not expose it in frontend code.
 
@@ -130,9 +131,11 @@ Railway deployment is optional. This project includes:
 
 Set the same environment variables in Railway. No webhook domain is required because the bot uses long polling.
 
+On startup, Atlas Life OS ensures the database schema exists before it begins processing Telegram updates. If voice notes transcribe but fail to save, check that `DATABASE_URL` points to the intended Neon database and that the latest deployment includes the startup schema fix.
+
 ## Voice Transcription
 
-Telegram voice notes arrive as OGG/Opus files. ForwardTask downloads the file, converts it to 16 kHz mono WAV with `ffmpeg`, and transcribes it locally with `faster-whisper`.
+Telegram voice notes arrive as OGG/Opus files. Atlas Life OS downloads the file, converts it to 16 kHz mono WAV with `ffmpeg`, and transcribes it locally with `faster-whisper`.
 
 The default model is `tiny` to keep CPU and memory use low. Larger models can improve accuracy but need more resources.
 
@@ -147,7 +150,7 @@ Temporary voice files are deleted in a `finally` block after each transcription 
 - `category`
 - `priority`
 
-If OpenAI is missing or fails, the fallback parser still saves the task. It uses `dateparser` for due dates and keyword rules for category and priority.
+If OpenAI is missing, rate-limited, or fails, the fallback parser still saves the task. It uses `dateparser` for due dates and keyword rules for category and priority.
 
 Tasks without due dates are saved with `due_at = null`.
 
