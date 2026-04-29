@@ -25,6 +25,7 @@ PRIORITIES = {"low", "medium", "high"}
 
 TIME_WORDS = r"(?:today|tomorrow|tonight|morning|afternoon|evening|monday|tuesday|wednesday|thursday|friday|saturday|sunday|am|pm|a\.m\.|p\.m\.|minutes?|hours?|days?|weeks?)"
 TIME_CUE = r"(?:at|by|for|around|about|before|after)"
+MERIDIEM = r"(?:[ap]\.?\s?m\.?)"
 
 
 @dataclass(frozen=True)
@@ -54,55 +55,69 @@ def _dateparser_settings(local_timezone: str) -> dict[str, Any]:
 
 def _normalize_time_text(text: str) -> str:
     normalized = re.sub(r"\b(\d{1,2})(\d{2})\s*([ap])\.?m\.?\b", r"\1:\2 \3m", text, flags=re.IGNORECASE)
-    normalized = re.sub(r"\b(\d{1,2})\s*([ap])\.?m\.?\b", r"\1 \2m", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\b(\d{1,2})\s*([ap])\.?\s*m\.?\b", r"\1 \2m", normalized, flags=re.IGNORECASE)
     return normalized
+
+
+def _normalized_meridiem(value: str | None) -> str | None:
+    if not value:
+        return None
+    cleaned = re.sub(r"[^ap]", "", value.lower())
+    return f"{cleaned}m" if cleaned in {"a", "p"} else None
+
+
+def _coerce_clock(hour: int, minute: int, meridiem: str | None, local_timezone: str) -> str | None:
+    if hour > 23 or minute > 59:
+        return None
+    meridiem = _normalized_meridiem(meridiem)
+    if meridiem:
+        if hour > 12:
+            return None
+        if meridiem == "pm" and hour != 12:
+            hour += 12
+        if meridiem == "am" and hour == 12:
+            hour = 0
+    local_tz = ZoneInfo(local_timezone)
+    now = datetime.now(local_tz)
+    due = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if due <= now:
+        due += timedelta(days=1)
+    return _utc_iso(due)
 
 
 def _clock_due_at(text: str, local_timezone: str) -> str | None:
     patterns = [
-        rf"\b{TIME_CUE}\s+(\d{{1,2}}):(\d{{2}})\s*([ap]m)?\b",
-        rf"\b{TIME_CUE}\s+(\d{{3,4}})\s*([ap]m)?\b",
-        r"\b(\d{1,2}):(\d{2})\s*([ap]m)\b",
-        r"\b(\d{3,4})\s*([ap]m)\b",
+        rf"\b{TIME_CUE}\s+(?P<hour>\d{{1,2}}):(?P<minute>\d{{2}})\s*(?P<meridiem>{MERIDIEM})?\b",
+        rf"\b{TIME_CUE}\s+(?P<hhmm>\d{{3,4}})\s*(?P<meridiem>{MERIDIEM})?\b",
+        rf"\b{TIME_CUE}\s+(?P<hour>\d{{1,2}})\s*(?P<meridiem>{MERIDIEM})\b",
+        rf"\b(?P<hour>\d{{1,2}}):(?P<minute>\d{{2}})\s*(?P<meridiem>{MERIDIEM})\b",
+        rf"\b(?P<hhmm>\d{{3,4}})\s*(?P<meridiem>{MERIDIEM})\b",
+        rf"\b(?P<hour>\d{{1,2}})\s*(?P<meridiem>{MERIDIEM})\b",
     ]
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE)
         if not match:
             continue
-        groups = match.groups()
-        if len(groups) == 3:
-            hour = int(groups[0])
-            minute = int(groups[1])
-            meridiem = groups[2]
-        else:
-            digits = groups[0]
-            meridiem = groups[1]
+        values = match.groupdict()
+        if values.get("hhmm"):
+            digits = values["hhmm"]
             hour = int(digits[:-2])
             minute = int(digits[-2:])
-        if hour > 23 or minute > 59:
-            continue
-        if meridiem:
-            meridiem = meridiem.lower()
-            if hour > 12:
-                continue
-            if meridiem == "pm" and hour != 12:
-                hour += 12
-            if meridiem == "am" and hour == 12:
-                hour = 0
-        local_tz = ZoneInfo(local_timezone)
-        now = datetime.now(local_tz)
-        due = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if due <= now:
-            due += timedelta(days=1)
-        return _utc_iso(due)
+        else:
+            hour = int(values["hour"])
+            minute = int(values.get("minute") or 0)
+        due_at = _coerce_clock(hour, minute, values.get("meridiem"), local_timezone)
+        if due_at:
+            return due_at
     return None
 
 
 def _clean_title(text: str) -> str:
     title = _normalize_time_text(text)
     title = re.sub(r"\b(?:remind me to|remind me|remember to|please remind me to|please remind me|i need to|need to|can you remind me to)\b", "", title, flags=re.IGNORECASE)
-    title = re.sub(rf"\b{TIME_CUE}\s+(?:\d{{1,2}}(?::\d{{2}})?|\d{{3,4}})\s*(?:am|pm)?\b", "", title, flags=re.IGNORECASE)
-    title = re.sub(rf"\b(?:at|by|before|after|on|in)\s+[^,.!?]*(?:{TIME_WORDS}|\d{{1,2}}(?::\d{{2}})?\s*(?:am|pm))\b", "", title, flags=re.IGNORECASE)
+    title = re.sub(rf"\b{TIME_CUE}\s+(?:\d{{1,2}}(?::\d{{2}})?|\d{{3,4}})\s*(?:{MERIDIEM})?\b", "", title, flags=re.IGNORECASE)
+    title = re.sub(rf"\b(?:at|by|before|after|on|in)\s+[^,.!?]*(?:{TIME_WORDS}|\d{{1,2}}(?::\d{{2}})?\s*(?:{MERIDIEM}))\b", "", title, flags=re.IGNORECASE)
+    title = re.sub(rf"\b\d{{1,2}}\s*(?:{MERIDIEM})\b", "", title, flags=re.IGNORECASE)
     title = re.sub(r"\s+", " ", title).strip(" .,-")
     return title[:240] or "Untitled task"
 
@@ -156,9 +171,10 @@ def fallback_parse_task(text: str, local_timezone: str) -> ParsedTask:
 
 def _validate_openai_payload(payload: dict[str, Any], original: str, local_timezone: str) -> ParsedTask:
     title = _clean_title(str(payload.get("title") or original))
+    explicit_due_at = _clock_due_at(_normalize_time_text(original), local_timezone)
     due_at_value = payload.get("due_at")
-    due_at = None
-    if due_at_value:
+    due_at = explicit_due_at
+    if due_at_value and not due_at:
         due_at_text = _normalize_time_text(str(due_at_value))
         due_at = _clock_due_at(due_at_text, local_timezone)
         if not due_at:
