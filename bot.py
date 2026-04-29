@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 from timezonefinder import TimezoneFinder
 
@@ -41,6 +41,7 @@ MENU_CURRENT_TASKS = "📋 Current Tasks"
 MENU_DUE_TODAY = "📅 Due Today"
 MENU_UPDATE_TIME = "📍 Update Local Time"
 MENU_BACK = "↩️ Back"
+REPLY_KEYBOARD_REMOVED_KEY = "reply_keyboard_removed"
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s %(message)s", level=logging.INFO)
 logger = logging.getLogger("atlas_life_os")
@@ -193,6 +194,9 @@ async def _send_home(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop(EDITING_TASK_KEY, None)
     context.user_data.pop(EDITING_MODE_KEY, None)
+    if update.message and not context.user_data.get(REPLY_KEYBOARD_REMOVED_KEY):
+        await update.message.reply_text("Controls updated.", reply_markup=ReplyKeyboardRemove())
+        context.user_data[REPLY_KEYBOARD_REMOVED_KEY] = True
     await _send_home(update, context)
 
 
@@ -282,7 +286,7 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("I could not detect a timezone from that location.")
         return
     await asyncio.to_thread(set_user_timezone, str(update.effective_user.id), timezone_name)
-    await update.message.reply_text(f"📍 Local time updated\n\n{timezone_name}")
+    await update.message.reply_text(f"📍 Local time updated\n\n{timezone_name}", reply_markup=ReplyKeyboardRemove())
 
 
 async def _handle_edit_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, task_id: str, local_timezone: str) -> bool:
