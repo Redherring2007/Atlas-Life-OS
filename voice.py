@@ -37,7 +37,12 @@ def _convert_to_wav(source: Path, target: Path) -> None:
 
 def _transcribe_wav(path: Path) -> str:
     model = _get_model()
-    segments, _info = model.transcribe(str(path), beam_size=1)
+    segments, _info = model.transcribe(
+        str(path),
+        beam_size=5,
+        language=config.whisper_language,
+        vad_filter=True,
+    )
     text = " ".join(segment.text.strip() for segment in segments if segment.text.strip())
     if not text:
         raise VoiceTranscriptionError("I could not hear any speech in that voice note.")
