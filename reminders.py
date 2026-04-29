@@ -11,18 +11,19 @@ from config import config
 from db import fetch_due_reminder_tasks, mark_reminder_sent
 
 
-def _format_due(value: str | None) -> str:
+def _format_due(value: str | None, local_timezone: str) -> str:
     if not value:
         return "No due time set"
     try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(ZoneInfo(config.local_timezone))
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(ZoneInfo(local_timezone))
         return dt.strftime("%a %d %b, %I:%M %p").lstrip("0")
     except ValueError:
         return value
 
 
 def _reminder_message(task: dict) -> str:
-    return f"Reminder\n\n{task['title']}\n\nDue\n{_format_due(task.get('due_at'))}"
+    local_timezone = task.get("user_timezone") or config.local_timezone
+    return f"Reminder\n\n{task['title']}\n\nDue\n{_format_due(task.get('due_at'), local_timezone)}"
 
 
 def _reminder_buttons(task: dict) -> InlineKeyboardMarkup:
