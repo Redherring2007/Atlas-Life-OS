@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update, User
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 from timezonefinder import TimezoneFinder
 
@@ -18,6 +18,7 @@ from db import (
     create_task,
     delete_task_by_number,
     ensure_schema,
+    ensure_user_access,
     get_active_parking,
     get_task_by_id,
     get_user_timezone,
@@ -48,6 +49,7 @@ MENU_DUE_TODAY = "📅 Due Today"
 MENU_UPDATE_TIME = "📍 Update Local Time"
 MENU_BACK = "↩️ Back"
 REPLY_KEYBOARD_REMOVED_KEY = "reply_keyboard_removed"
+ACCESS_PAUSED_MESSAGE = "Atlas Life OS access is currently paused."
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s %(message)s", level=logging.INFO)
 logger = logging.getLogger("atlas_life_os")
@@ -78,6 +80,33 @@ def _format_local_time(value: str | None, local_timezone: str) -> str:
 
 def _maps_url(parking: dict[str, Any]) -> str:
     return f"https://www.google.com/maps/search/?api=1&query={parking['latitude']},{parking['longitude']}"
+
+
+async def _access_allowed(user: User | None) -> bool:
+    if not user:
+        return False
+    return await asyncio.to_thread(
+        ensure_user_access,
+        str(user.id),
+        user.username,
+        user.first_name,
+        user.last_name,
+    )
+
+
+async def _guard_message(update: Update) -> bool:
+    allowed = await _access_allowed(update.effective_user)
+    if not allowed and update.message:
+        await update.message.reply_text(ACCESS_PAUSED_MESSAGE, reply_markup=ReplyKeyboardRemove())
+    return allowed
+
+
+async def _guard_query(update: Update) -> bool:
+    query = update.callback_query
+    allowed = await _access_allowed(query.from_user if query else None)
+    if not allowed and query:
+        await query.edit_message_text(ACCESS_PAUSED_MESSAGE)
+    return allowed
 
 
 def _location_keyboard(label: str = "📍 Share location") -> ReplyKeyboardMarkup:
@@ -250,6 +279,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop(EDITING_MODE_KEY, None)
     context.user_data.pop(LOCATION_MODE_KEY, None)
     context.user_data.pop(PARKING_BAY_MODE_KEY, None)
+    if not await _guard_message(update):
+        return
     if update.message and not context.user_data.get(REPLY_KEYBOARD_REMOVED_KEY):
         await update.message.reply_text("Atlas controls refreshed.", reply_markup=ReplyKeyboardRemove())
         context.user_data[REPLY_KEYBOARD_REMOVED_KEY] = True
@@ -257,6 +288,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _guard_message(update):
+        return
     await update.message.reply_text(
         "🧭 Atlas Life OS commands\n\n"
         "/start - open Atlas Life OS\n"
@@ -276,6 +309,8 @@ async def _send_task_list(update: Update, tasks: list[dict[str, Any]], title: st
 
 
 async def tasks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _guard_message(update):
+        return
     user_id = str(update.effective_user.id)
     local_timezone, tasks = await asyncio.gather(
         asyncio.to_thread(get_user_timezone, user_id),
@@ -285,6 +320,8 @@ async def tasks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _guard_message(update):
+        return
     user_id = str(update.effective_user.id)
     local_timezone, tasks = await asyncio.gather(
         asyncio.to_thread(get_user_timezone, user_id),
@@ -294,6 +331,8 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def overdue_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _guard_message(update):
+        return
     user_id = str(update.effective_user.id)
     local_timezone, tasks = await asyncio.gather(
         asyncio.to_thread(get_user_timezone, user_id),
@@ -312,6 +351,8 @@ def _task_number(context: ContextTypes.DEFAULT_TYPE) -> int | None:
 
 
 async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _guard_message(update):
+        return
     number = _task_number(context)
     if number is None:
         await update.message.reply_text("Use /done <task number>.")
@@ -324,6 +365,8 @@ async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _guard_message(update):
+        return
     number = _task_number(context)
     if number is None:
         await update.message.reply_text("Use /delete <task number>.")
@@ -336,6 +379,8 @@ async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _guard_message(update):
+        return
     location = update.message.location
     user_id = str(update.effective_user.id)
     chat_id = str(update.effective_chat.id)
@@ -436,6 +481,8 @@ async def _handle_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _guard_message(update):
+        return
     text = (update.message.text or "").strip()
     if not text:
         return
@@ -458,6 +505,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _guard_message(update):
+        return
     try:
         transcription = await transcribe_voice_note(update.message.voice)
     except VoiceTranscriptionError as exc:
@@ -481,6 +530,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
+    if not await _guard_query(update):
+        return
     data = query.data or ""
     user_id = str(query.from_user.id)
     local_timezone = await asyncio.to_thread(get_user_timezone, user_id)
