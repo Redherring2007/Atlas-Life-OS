@@ -1,6 +1,6 @@
 {
   "$schema": "https://railway.app/railway.schema.json",
   "deploy": {
-    "startCommand": "python bot.py"
+    "startCommand": "sh -c 'python bot.py & python -m uvicorn mini_app:app --host 0.0.0.0 --port ${PORT:-8000}'"
   }
 }
