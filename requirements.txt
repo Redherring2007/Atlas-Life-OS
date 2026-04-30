@@ -6,3 +6,5 @@ faster-whisper==1.1.1
 openai==1.61.1
 requests==2.32.3
 timezonefinder==6.5.8
+fastapi==0.115.8
+uvicorn[standard]==0.34.0
