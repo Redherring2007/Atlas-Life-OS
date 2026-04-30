@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update, User
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, MenuButtonWebApp, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update, User, WebAppInfo
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 from timezonefinder import TimezoneFinder
 
@@ -80,6 +80,12 @@ def _format_local_time(value: str | None, local_timezone: str) -> str:
 
 def _maps_url(parking: dict[str, Any]) -> str:
     return f"https://www.google.com/maps/search/?api=1&query={parking['latitude']},{parking['longitude']}"
+
+
+def _mini_app_url() -> str | None:
+    if config.mini_app_url:
+        return config.mini_app_url.rstrip("/")
+    return None
 
 
 async def _access_allowed(user: User | None) -> bool:
@@ -188,8 +194,12 @@ def _parking_buttons(parking: dict[str, Any]) -> InlineKeyboardMarkup:
 
 
 def _home_buttons(parking: dict[str, Any] | None) -> InlineKeyboardMarkup:
+    rows = []
+    mini_url = _mini_app_url()
+    if mini_url:
+        rows.append([InlineKeyboardButton("✨ Open Atlas App", web_app=WebAppInfo(url=f"{mini_url}/app"))])
     parking_label = "🚘 Find parked car" if parking else "🚘 Log parking"
-    return InlineKeyboardMarkup(
+    rows.extend(
         [
             [InlineKeyboardButton(parking_label, callback_data="parking")],
             [InlineKeyboardButton("📋 Current tasks", callback_data="tasks:pending")],
@@ -197,6 +207,7 @@ def _home_buttons(parking: dict[str, Any] | None) -> InlineKeyboardMarkup:
             [InlineKeyboardButton("📍 Update local time", callback_data="time:update")],
         ]
     )
+    return InlineKeyboardMarkup(rows)
 
 
 def _task_list_message(tasks: list[dict[str, Any]], title: str, empty_message: str, local_timezone: str) -> str:
@@ -680,6 +691,9 @@ async def on_startup(application: Application) -> None:
             BotCommand("help", "Show commands"),
         ]
     )
+    mini_url = _mini_app_url()
+    if mini_url:
+        await application.bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text="Atlas", web_app=WebAppInfo(url=f"{mini_url}/app")))
     logger.info("Database schema and Telegram command menu are ready")
     REMINDER_STOP_EVENT = asyncio.Event()
     REMINDER_TASK = asyncio.create_task(reminder_worker(application, REMINDER_STOP_EVENT))
