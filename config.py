@@ -4,14 +4,16 @@ import hashlib
 import hmac
 import json
 import os
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
@@ -62,6 +64,10 @@ class UserContext(BaseModel):
     username: str | None = None
     first_name: str | None = None
     last_name: str | None = None
+
+
+class CaptureIn(BaseModel):
+    text: str
 
 
 class ParkingLocationIn(BaseModel):
@@ -143,11 +149,35 @@ def _parking_payload(parking: dict[str, Any] | None, local_timezone: str) -> dic
     }
 
 
+async def _create_mini_task(user: UserContext, text: str, source_type: str, transcribed_text: str | None = None) -> dict[str, Any]:
+    from db import create_task, get_user_timezone
+    from parser import parse_task
+
+    cleaned = text.strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="Add a task first")
+    local_timezone = get_user_timezone(user.telegram_user_id)
+    parsed = await parse_task(cleaned, local_timezone)
+    return create_task(
+        {
+            "telegram_user_id": user.telegram_user_id,
+            "telegram_chat_id": user.telegram_user_id,
+            "source_type": source_type,
+            "raw_input": "" if source_type == "voice" else cleaned,
+            "transcribed_text": transcribed_text,
+            "title": parsed.title,
+            "due_at": parsed.due_at,
+            "category": parsed.category,
+            "priority": parsed.priority,
+        }
+    )
+
+
 MINI_APP_HTML = """
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Atlas Life OS</title><script src="https://telegram.org/js/telegram-web-app.js"></script><style>
-:root{color-scheme:dark;--bg:#101418;--panel:#171d23;--panel2:#1f2830;--line:#303a44;--text:#f5f1e8;--muted:#a9b3bc;--gold:#d6b66d;--green:#67d391;--red:#ff7a7a}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif}.shell{width:min(720px,100%);margin:0 auto;padding:18px 12px 28px}h1{font-size:25px;margin:0 0 4px}.muted{color:var(--muted);font-size:13px;line-height:1.4}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0}.metric,.section,.task,.parking{background:var(--panel);border:1px solid var(--line);border-radius:8px}.metric{padding:12px}.metric strong{display:block;color:var(--gold);font-size:24px}.section{padding:14px;margin-top:10px}h2{font-size:15px;margin:0 0 10px}.task,.parking{background:var(--panel2);padding:12px;margin-top:8px}.title{font-size:15px;margin-bottom:8px}.meta{color:var(--muted);font-size:12px;margin-bottom:10px}.actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}.button{border:1px solid var(--line);border-radius:8px;min-height:42px;background:#25303a;color:var(--text);padding:10px 12px;text-decoration:none;display:flex;align-items:center;justify-content:center;text-align:center}.primary{background:var(--gold);border-color:var(--gold);color:#16130b;font-weight:700}.success{background:rgba(103,211,145,.14);border-color:rgba(103,211,145,.55)}.danger{background:rgba(255,122,122,.12);border-color:rgba(255,122,122,.48)}input{width:100%;height:42px;margin-top:8px;border-radius:8px;border:1px solid var(--line);background:#101820;color:var(--text);padding:0 12px}.toast{position:fixed;left:12px;right:12px;bottom:12px;padding:12px;background:#0d1115;border:1px solid var(--line);border-radius:8px;display:none}@media(max-width:420px){.grid,.actions{grid-template-columns:1fr}}
-</style></head><body><main class="shell"><h1>Atlas Life OS</h1><div id="tz" class="muted">Loading workspace</div><section class="grid"><div class="metric"><strong id="pending">0</strong><span class="muted">Tasks</span></div><div class="metric"><strong id="today">0</strong><span class="muted">Today</span></div><div class="metric"><strong id="parkingState">-</strong><span class="muted">Parking</span></div></section><section class="section"><h2>Capture</h2><div class="muted">Type or send a voice note in Telegram to add a task. Use this app to review, complete, snooze, and find your parked car.</div></section><section class="section"><h2>Parking</h2><div id="parking" class="parking"></div></section><section class="section"><h2>Current Tasks</h2><button id="refresh" class="button" type="button">Refresh</button><div id="tasks"></div></section></main><div id="toast" class="toast"></div><script>
-const tg=window.Telegram?.WebApp;const initData=tg?.initData||"";if(tg){tg.ready();tg.expand();tg.setHeaderColor("#101418");tg.setBackgroundColor("#101418")}const $=id=>document.getElementById(id);function toast(m){$("toast").textContent=m;$("toast").style.display="block";clearTimeout(toast.t);toast.t=setTimeout(()=>$("toast").style.display="none",2600)}async function api(path,opt={}){const res=await fetch(path,{...opt,headers:{"Content-Type":"application/json","X-Telegram-Init-Data":initData,...(opt.headers||{})}});if(!res.ok){const b=await res.json().catch(()=>({}));throw Error(b.detail||"Request failed")}return res.json()}async function mutate(fn,msg){try{await fn();toast(msg);await load()}catch(e){toast(e.message)}}function renderParking(p){const el=$("parking");if(!p){el.innerHTML='<div class="muted">No parking location saved.</div><button id="saveParking" class="button primary" type="button">Save current location</button>';$("saveParking").onclick=saveParking;return}el.innerHTML=`<div class="meta">${p.updated_label||"Saved"}<br>${p.bay_number?"Bay "+p.bay_number:"No bay added"}</div><div class="actions"><a class="button primary" href="${p.maps_url}" target="_blank">Directions</a><button id="clearParking" class="button danger" type="button">Picked up</button></div><input id="bayInput" placeholder="Bay, row, floor" value="${p.bay_number||""}"><button id="saveBay" class="button" type="button" style="margin-top:8px;width:100%">Save bay</button>`;$("clearParking").onclick=()=>mutate(()=>api("/api/parking",{method:"DELETE"}),"Parking cleared");$("saveBay").onclick=()=>{const v=$("bayInput").value.trim();if(v)mutate(()=>api("/api/parking/bay",{method:"POST",body:JSON.stringify({bay_number:v})}),"Bay saved")}}function renderTask(t){const el=document.createElement("div");el.className="task";el.innerHTML=`<div class="title"></div><div class="meta"></div><div class="actions"><button class="button success">Done</button><button class="button">20 min</button></div>`;el.querySelector(".title").textContent=t.title;el.querySelector(".meta").textContent=t.due_label;el.querySelectorAll("button")[0].onclick=()=>mutate(()=>api(`/api/tasks/${t.id}/done`,{method:"POST"}),"Task done");el.querySelectorAll("button")[1].onclick=()=>mutate(()=>api(`/api/tasks/${t.id}/snooze`,{method:"POST",body:JSON.stringify({minutes:20})}),"Moved 20 minutes");return el}function render(d){$("tz").textContent=d.timezone;$("pending").textContent=d.counts.pending;$("today").textContent=d.counts.today;$("parkingState").textContent=d.parking?"Saved":"Open";renderParking(d.parking);const tasks=$("tasks");tasks.innerHTML="";if(!d.tasks.length){tasks.innerHTML='<div class="muted" style="padding-top:12px">No current tasks.</div>';return}d.tasks.forEach(t=>tasks.appendChild(renderTask(t)))}async function load(){if(!initData){toast("Open this from Telegram to sign in");return}try{render(await api("/api/me"))}catch(e){toast(e.message)}}function saveParking(){if(!navigator.geolocation){toast("Location unavailable");return}navigator.geolocation.getCurrentPosition(pos=>{const bay=prompt("Bay, row, or floor?","")||"";mutate(()=>api("/api/parking",{method:"POST",body:JSON.stringify({latitude:pos.coords.latitude,longitude:pos.coords.longitude,bay_number:bay.trim()||null})}),"Parking saved")},()=>toast("Location permission was not granted"),{enableHighAccuracy:true,timeout:12000})}$("refresh").onclick=load;load();
+:root{color-scheme:dark;--bg:#101418;--panel:#171d23;--panel2:#1f2830;--line:#303a44;--text:#f5f1e8;--muted:#a9b3bc;--gold:#d6b66d;--green:#67d391;--red:#ff7a7a}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif}.shell{width:min(720px,100%);margin:0 auto;padding:18px 12px 28px}h1{font-size:25px;margin:0 0 4px}.muted{color:var(--muted);font-size:13px;line-height:1.4}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0}.metric,.section,.task,.parking{background:var(--panel);border:1px solid var(--line);border-radius:8px}.metric{padding:12px}.metric strong{display:block;color:var(--gold);font-size:24px}.section{padding:14px;margin-top:10px}h2{font-size:15px;margin:0 0 10px}.task,.parking{background:var(--panel2);padding:12px;margin-top:8px}.title{font-size:15px;margin-bottom:8px}.meta{color:var(--muted);font-size:12px;margin-bottom:10px}.actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}.button{border:1px solid var(--line);border-radius:8px;min-height:42px;background:#25303a;color:var(--text);padding:10px 12px;text-decoration:none;display:flex;align-items:center;justify-content:center;text-align:center}.primary{background:var(--gold);border-color:var(--gold);color:#16130b;font-weight:700}.success{background:rgba(103,211,145,.14);border-color:rgba(103,211,145,.55)}.danger{background:rgba(255,122,122,.12);border-color:rgba(255,122,122,.48)}input,textarea{width:100%;border-radius:8px;border:1px solid var(--line);background:#101820;color:var(--text);padding:11px 12px;font:inherit}textarea{min-height:86px;resize:vertical}.capture-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}.recording{border-color:var(--red);color:var(--red)}.toast{position:fixed;left:12px;right:12px;bottom:12px;padding:12px;background:#0d1115;border:1px solid var(--line);border-radius:8px;display:none}@media(max-width:420px){.grid,.actions,.capture-actions{grid-template-columns:1fr}}
+</style></head><body><main class="shell"><h1>Atlas Life OS</h1><div id="tz" class="muted">Loading workspace</div><section class="grid"><div class="metric"><strong id="pending">0</strong><span class="muted">Tasks</span></div><div class="metric"><strong id="today">0</strong><span class="muted">Today</span></div><div class="metric"><strong id="parkingState">-</strong><span class="muted">Parking</span></div></section><section class="section"><h2>Capture</h2><textarea id="captureText" placeholder="Type a task, for example: Chase invoice tomorrow at 9am"></textarea><div class="capture-actions"><button id="saveTask" class="button primary" type="button">Save task</button><button id="recordTask" class="button" type="button">Record voice</button></div><div id="recordHint" class="muted" style="margin-top:8px">Capture here first. Telegram chat still works as a backup.</div></section><section class="section"><h2>Parking</h2><div id="parking" class="parking"></div></section><section class="section"><h2>Current Tasks</h2><button id="refresh" class="button" type="button">Refresh</button><div id="tasks"></div></section></main><div id="toast" class="toast"></div><script>
+const tg=window.Telegram?.WebApp;const initData=tg?.initData||"";let recorder=null,chunks=[],recording=false;if(tg){tg.ready();tg.expand();tg.setHeaderColor("#101418");tg.setBackgroundColor("#101418")}const $=id=>document.getElementById(id);function toast(m){$("toast").textContent=m;$("toast").style.display="block";clearTimeout(toast.t);toast.t=setTimeout(()=>$("toast").style.display="none",3000)}async function api(path,opt={}){const res=await fetch(path,{...opt,headers:{"Content-Type":"application/json","X-Telegram-Init-Data":initData,...(opt.headers||{})}});if(!res.ok){const b=await res.json().catch(()=>({}));throw Error(b.detail||"Request failed")}return res.json()}async function upload(path,fd){const res=await fetch(path,{method:"POST",headers:{"X-Telegram-Init-Data":initData},body:fd});if(!res.ok){const b=await res.json().catch(()=>({}));throw Error(b.detail||"Upload failed")}return res.json()}async function mutate(fn,msg){try{await fn();toast(msg);await load()}catch(e){toast(e.message)}}function renderParking(p){const el=$("parking");if(!p){el.innerHTML='<div class="muted">No parking location saved.</div><button id="saveParking" class="button primary" type="button">Save current location</button>';$("saveParking").onclick=saveParking;return}el.innerHTML=`<div class="meta">${p.updated_label||"Saved"}<br>${p.bay_number?"Bay "+p.bay_number:"No bay added"}</div><div class="actions"><a class="button primary" href="${p.maps_url}" target="_blank">Directions</a><button id="clearParking" class="button danger" type="button">Picked up</button></div><input id="bayInput" placeholder="Bay, row, floor" value="${p.bay_number||""}" style="margin-top:8px"><button id="saveBay" class="button" type="button" style="margin-top:8px;width:100%">Save bay</button>`;$("clearParking").onclick=()=>mutate(()=>api("/api/parking",{method:"DELETE"}),"Parking cleared");$("saveBay").onclick=()=>{const v=$("bayInput").value.trim();if(v)mutate(()=>api("/api/parking/bay",{method:"POST",body:JSON.stringify({bay_number:v})}),"Bay saved")}}function renderTask(t){const el=document.createElement("div");el.className="task";el.innerHTML=`<div class="title"></div><div class="meta"></div><div class="actions"><button class="button success">Done</button><button class="button">20 min</button></div>`;el.querySelector(".title").textContent=t.title;el.querySelector(".meta").textContent=t.due_label;el.querySelectorAll("button")[0].onclick=()=>mutate(()=>api(`/api/tasks/${t.id}/done`,{method:"POST"}),"Task done");el.querySelectorAll("button")[1].onclick=()=>mutate(()=>api(`/api/tasks/${t.id}/snooze`,{method:"POST",body:JSON.stringify({minutes:20})}),"Moved 20 minutes");return el}function render(d){$("tz").textContent=d.timezone;$("pending").textContent=d.counts.pending;$("today").textContent=d.counts.today;$("parkingState").textContent=d.parking?"Saved":"Open";renderParking(d.parking);const tasks=$("tasks");tasks.innerHTML="";if(!d.tasks.length){tasks.innerHTML='<div class="muted" style="padding-top:12px">No current tasks.</div>';return}d.tasks.forEach(t=>tasks.appendChild(renderTask(t)))}async function load(){if(!initData){toast("Open this from Telegram to sign in");return}try{render(await api("/api/me"))}catch(e){toast(e.message)}}function saveParking(){if(!navigator.geolocation){toast("Location unavailable");return}navigator.geolocation.getCurrentPosition(pos=>{const bay=prompt("Bay, row, or floor?","")||"";mutate(()=>api("/api/parking",{method:"POST",body:JSON.stringify({latitude:pos.coords.latitude,longitude:pos.coords.longitude,bay_number:bay.trim()||null})}),"Parking saved")},()=>toast("Location permission was not granted"),{enableHighAccuracy:true,timeout:12000})}async function saveTask(){const text=$("captureText").value.trim();if(!text){toast("Type a task first");return}await mutate(()=>api("/api/capture",{method:"POST",body:JSON.stringify({text})}),"Task saved");$("captureText").value=""}async function toggleRecord(){if(recording){recorder.stop();return}if(!navigator.mediaDevices?.getUserMedia){toast("Voice recording is not available here");return}try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});chunks=[];recorder=new MediaRecorder(stream);recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};recorder.onstop=async()=>{stream.getTracks().forEach(t=>t.stop());recording=false;$("recordTask").textContent="Record voice";$("recordTask").classList.remove("recording");const blob=new Blob(chunks,{type:recorder.mimeType||"audio/webm"});const fd=new FormData();fd.append("file",blob,"atlas-voice.webm");await mutate(()=>upload("/api/capture/voice",fd),"Voice task saved")};recording=true;$("recordTask").textContent="Stop recording";$("recordTask").classList.add("recording");recorder.start()}catch(e){toast("Microphone permission was not granted")}}$("refresh").onclick=load;$("saveTask").onclick=saveTask;$("recordTask").onclick=toggleRecord;load();
 </script></body></html>
 """
 
@@ -179,6 +209,43 @@ def api_me(user: UserContext = Depends(current_user)) -> dict[str, Any]:
         "parking": _parking_payload(parking, local_timezone),
         "server_time": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@web_app.post("/api/capture")
+async def api_capture(payload: CaptureIn, user: UserContext = Depends(current_user)) -> dict[str, Any]:
+    local_timezone = _get_user_timezone(user.telegram_user_id)
+    task = await _create_mini_task(user, payload.text, "text")
+    return {"task": _task_payload(task, local_timezone)}
+
+
+@web_app.post("/api/capture/voice")
+async def api_capture_voice(file: UploadFile = File(...), user: UserContext = Depends(current_user)) -> dict[str, Any]:
+    from voice import VoiceTranscriptionError, transcribe_audio_path
+
+    suffix = Path(file.filename or "voice.webm").suffix or ".webm"
+    source_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temp_file:
+            source_path = Path(temp_file.name)
+            temp_file.write(await file.read())
+        transcription = await transcribe_audio_path(source_path)
+        local_timezone = _get_user_timezone(user.telegram_user_id)
+        task = await _create_mini_task(user, transcription, "voice", transcription)
+        return {"task": _task_payload(task, local_timezone), "transcription": transcription}
+    except VoiceTranscriptionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        if source_path:
+            try:
+                os.remove(source_path)
+            except FileNotFoundError:
+                pass
+
+
+def _get_user_timezone(user_id: str) -> str:
+    from db import get_user_timezone
+
+    return get_user_timezone(user_id)
 
 
 @web_app.post("/api/tasks/{task_id}/done")
