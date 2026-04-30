@@ -16,6 +16,8 @@ class Config:
     whisper_language: str | None
     reminder_check_seconds: int
     local_timezone: str
+    mini_app_url: str | None
+    port: int
 
 
 def _required(name: str) -> str:
@@ -34,6 +36,8 @@ def load_config() -> Config:
         whisper_language=os.getenv("WHISPER_LANGUAGE", "en") or None,
         reminder_check_seconds=int(os.getenv("REMINDER_CHECK_SECONDS", "60")),
         local_timezone=os.getenv("LOCAL_TIMEZONE", "Asia/Dubai"),
+        mini_app_url=os.getenv("MINI_APP_URL") or None,
+        port=int(os.getenv("PORT", "8000")),
     )
 
 
