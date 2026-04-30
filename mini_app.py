@@ -3,13 +3,15 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl
 from zoneinfo import ZoneInfo
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from timezonefinder import TimezoneFinder
@@ -18,16 +20,20 @@ from config import config
 from db import (
     clear_parking_location,
     complete_task_by_id,
+    create_task,
     ensure_user_access,
     get_active_parking,
     get_user_timezone,
     list_pending_tasks,
     list_today_tasks,
+    restore_task_by_id,
     save_parking_location,
     set_parking_bay,
     set_user_timezone,
     snooze_task_by_id,
+    update_task_by_id,
 )
+from parser import parse_task
 
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -40,6 +46,14 @@ class UserContext(BaseModel):
     username: str | None = None
     first_name: str | None = None
     last_name: str | None = None
+
+
+class CaptureIn(BaseModel):
+    text: str
+
+
+class TaskEditIn(BaseModel):
+    text: str
 
 
 class ParkingLocationIn(BaseModel):
@@ -85,6 +99,21 @@ def _parking_payload(parking: dict[str, Any] | None, local_timezone: str) -> dic
         "bay_number": parking.get("bay_number"),
         "updated_label": _format_dt(parking.get("updated_at") or parking.get("created_at"), local_timezone),
         "maps_url": f"https://www.google.com/maps/search/?api=1&query={parking['latitude']},{parking['longitude']}",
+    }
+
+
+async def _parse_task_text(text: str, local_timezone: str) -> dict[str, Any]:
+    cleaned = text.strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="Add a task first")
+    parsed = await parse_task(cleaned, local_timezone)
+    return {
+        "raw_input": cleaned,
+        "transcribed_text": None,
+        "title": parsed.title,
+        "due_at": parsed.due_at,
+        "category": parsed.category,
+        "priority": parsed.priority,
     }
 
 
@@ -150,12 +179,81 @@ def api_me(user: UserContext = Depends(current_user)) -> dict[str, Any]:
     }
 
 
+@app.post("/api/capture")
+async def api_capture(payload: CaptureIn, user: UserContext = Depends(current_user)) -> dict[str, Any]:
+    local_timezone = get_user_timezone(user.telegram_user_id)
+    updates = await _parse_task_text(payload.text, local_timezone)
+    task = create_task(
+        {
+            "telegram_user_id": user.telegram_user_id,
+            "telegram_chat_id": user.telegram_user_id,
+            "source_type": "text",
+            **updates,
+        }
+    )
+    return {"task": _task_payload(task, local_timezone)}
+
+
+@app.post("/api/capture/voice")
+async def api_capture_voice(file: UploadFile = File(...), user: UserContext = Depends(current_user)) -> dict[str, Any]:
+    from voice import VoiceTranscriptionError, transcribe_audio_path
+
+    suffix = Path(file.filename or "voice.webm").suffix or ".webm"
+    source_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temp_file:
+            source_path = Path(temp_file.name)
+            temp_file.write(await file.read())
+        transcription = await transcribe_audio_path(source_path)
+        local_timezone = get_user_timezone(user.telegram_user_id)
+        parsed = await _parse_task_text(transcription, local_timezone)
+        task = create_task(
+            {
+                "telegram_user_id": user.telegram_user_id,
+                "telegram_chat_id": user.telegram_user_id,
+                "source_type": "voice",
+                **parsed,
+                "raw_input": "",
+                "transcribed_text": transcription,
+            }
+        )
+        return {"task": _task_payload(task, local_timezone), "transcription": transcription}
+    except VoiceTranscriptionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        if source_path:
+            try:
+                os.remove(source_path)
+            except FileNotFoundError:
+                pass
+
+
 @app.post("/api/tasks/{task_id}/done")
 def api_done_task(task_id: str, user: UserContext = Depends(current_user)) -> dict[str, Any]:
     task = complete_task_by_id(user.telegram_user_id, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    return {"ok": True}
+    local_timezone = get_user_timezone(user.telegram_user_id)
+    return {"task": _task_payload(task, local_timezone)}
+
+
+@app.post("/api/tasks/{task_id}/undo")
+def api_undo_task(task_id: str, user: UserContext = Depends(current_user)) -> dict[str, Any]:
+    task = restore_task_by_id(user.telegram_user_id, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task could not be restored")
+    local_timezone = get_user_timezone(user.telegram_user_id)
+    return {"task": _task_payload(task, local_timezone)}
+
+
+@app.put("/api/tasks/{task_id}")
+async def api_edit_task(task_id: str, payload: TaskEditIn, user: UserContext = Depends(current_user)) -> dict[str, Any]:
+    local_timezone = get_user_timezone(user.telegram_user_id)
+    updates = await _parse_task_text(payload.text, local_timezone)
+    task = update_task_by_id(user.telegram_user_id, task_id, updates)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {"task": _task_payload(task, local_timezone)}
 
 
 @app.post("/api/tasks/{task_id}/snooze")

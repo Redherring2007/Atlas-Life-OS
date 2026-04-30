@@ -12,6 +12,7 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY bot.py config.py db.py parser.py voice.py reminders.py schema.sql ./
+COPY app.py bot.py config.py db.py mini_app.py parser.py voice.py reminders.py schema.sql ./
+COPY static ./static
 
-CMD ["python", "bot.py"]
+CMD ["python", "app.py"]

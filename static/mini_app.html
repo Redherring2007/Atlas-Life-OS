@@ -32,7 +32,7 @@
       letter-spacing: 0;
     }
 
-    button, input { font: inherit; }
+    button, input, textarea { font: inherit; }
 
     .shell {
       width: min(720px, 100%);
@@ -139,11 +139,13 @@
       margin-bottom: 10px;
     }
 
-    .actions {
+    .actions, .capture-actions {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(3, 1fr);
       gap: 8px;
     }
+
+    .capture-actions { margin-top: 8px; }
 
     .button {
       border: 1px solid var(--line);
@@ -166,6 +168,7 @@
     .button.success { background: rgba(103, 211, 145, .14); border-color: rgba(103, 211, 145, .55); }
     .button.warn { background: rgba(214, 182, 109, .13); border-color: rgba(214, 182, 109, .55); }
     .button.danger { background: rgba(255, 122, 122, .12); border-color: rgba(255, 122, 122, .48); }
+    .button.recording { border-color: var(--red); color: var(--red); }
     .button:disabled { opacity: .55; cursor: wait; }
 
     .parking {
@@ -180,22 +183,29 @@
       margin: 4px 0 12px;
     }
 
-    .parking-form {
+    .parking-form, .task-edit {
       display: grid;
-      grid-template-columns: 1fr auto;
+      grid-template-columns: 1fr auto auto;
       gap: 8px;
       margin-top: 8px;
     }
 
-    input {
+    input, textarea {
       min-width: 0;
-      height: 42px;
       border-radius: var(--radius);
       border: 1px solid var(--line);
       background: #101820;
       color: var(--text);
       padding: 0 12px;
       outline: none;
+    }
+
+    input { height: 42px; }
+    textarea {
+      width: 100%;
+      min-height: 86px;
+      padding: 11px 12px;
+      resize: vertical;
     }
 
     .empty {
@@ -220,11 +230,11 @@
       z-index: 5;
     }
 
-    @media (max-width: 420px) {
+    @media (max-width: 520px) {
       .shell { padding-left: 10px; padding-right: 10px; }
       .grid { grid-template-columns: 1fr; }
       .metric { min-height: auto; }
-      .actions, .parking-form { grid-template-columns: 1fr; }
+      .actions, .capture-actions, .parking-form, .task-edit { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -248,7 +258,12 @@
       <div class="section-head">
         <h2>Capture</h2>
       </div>
-      <div class="subtle">Type or send a voice note in Telegram to add a task. Use this app to review, complete, snooze, and find your parked car.</div>
+      <textarea id="captureText" placeholder="Add a task, for example: Chase invoice tomorrow at 9am"></textarea>
+      <div class="capture-actions">
+        <button id="saveTask" class="button primary" type="button">Save</button>
+        <button id="recordTask" class="button" type="button">Record</button>
+        <button id="clearCapture" class="button" type="button">Clear</button>
+      </div>
     </section>
 
     <section class="section">
@@ -272,7 +287,8 @@
   <script>
     const tg = window.Telegram?.WebApp;
     const initData = tg?.initData || "";
-    const state = { busy: false, data: null };
+    const state = { busy: false, data: null, recorder: null, chunks: [], recording: false };
+    const allowedKeys = { microphone: "atlas.microphone.allowed", geolocation: "atlas.location.allowed" };
 
     if (tg) {
       tg.ready();
@@ -308,25 +324,113 @@
       return res.json();
     }
 
+    async function upload(path, formData) {
+      const res = await fetch(path, {
+        method: "POST",
+        headers: { "X-Telegram-Init-Data": initData },
+        body: formData
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || "Upload failed");
+      }
+      return res.json();
+    }
+
+    async function permissionState(name) {
+      if (!navigator.permissions?.query) return "prompt";
+      try {
+        const status = await navigator.permissions.query({ name });
+        return status.state;
+      } catch (_err) {
+        return "prompt";
+      }
+    }
+
+    async function rememberAllowed(name) {
+      const key = allowedKeys[name];
+      if (!key) return;
+      localStorage.setItem(key, "1");
+    }
+
+    async function forgetAllowed(name) {
+      const key = allowedKeys[name];
+      if (!key) return;
+      localStorage.removeItem(key);
+    }
+
+    function updateCounts(delta) {
+      const pending = Math.max(0, Number($("pendingCount").textContent || 0) + delta);
+      $("pendingCount").textContent = String(pending);
+    }
+
     function taskCard(task) {
       const el = document.createElement("article");
       el.className = "task";
+      renderTaskView(el, task);
+      return el;
+    }
+
+    function renderTaskView(el, task) {
       el.innerHTML = `
         <div class="task-title"></div>
         <div class="task-meta"></div>
         <div class="actions">
           <button class="button success" type="button" data-action="done">Done</button>
+          <button class="button" type="button" data-action="edit">Edit</button>
           <button class="button warn" type="button" data-action="snooze">20 min</button>
         </div>`;
       el.querySelector(".task-title").textContent = task.title;
       el.querySelector(".task-meta").textContent = task.due_label;
-      el.querySelector('[data-action="done"]').addEventListener("click", async () => {
-        await mutate(() => api(`/api/tasks/${task.id}/done`, { method: "POST" }), "Task marked done");
-      });
+      el.querySelector('[data-action="done"]').addEventListener("click", async () => markDone(el, task));
+      el.querySelector('[data-action="edit"]').addEventListener("click", () => renderTaskEditor(el, task));
       el.querySelector('[data-action="snooze"]').addEventListener("click", async () => {
         await mutate(() => api(`/api/tasks/${task.id}/snooze`, { method: "POST", body: JSON.stringify({ minutes: 20 }) }), "Reminder moved 20 minutes");
       });
-      return el;
+    }
+
+    function renderTaskEditor(el, task) {
+      el.innerHTML = `
+        <div class="task-meta">Edit task</div>
+        <div class="task-edit">
+          <input data-field="title" />
+          <button class="button primary" type="button" data-action="save">Save</button>
+          <button class="button" type="button" data-action="cancel">Cancel</button>
+        </div>`;
+      const input = el.querySelector('[data-field="title"]');
+      input.value = task.title;
+      input.focus();
+      el.querySelector('[data-action="cancel"]').addEventListener("click", () => renderTaskView(el, task));
+      el.querySelector('[data-action="save"]').addEventListener("click", async () => {
+        const text = input.value.trim();
+        if (!text) return showToast("Add a task name first");
+        await mutate(async () => {
+          const result = await api(`/api/tasks/${task.id}`, { method: "PUT", body: JSON.stringify({ text }) });
+          renderTaskView(el, result.task);
+        }, "Task updated", false);
+      });
+    }
+
+    async function markDone(el, task) {
+      if (state.busy) return;
+      state.busy = true;
+      try {
+        await api(`/api/tasks/${task.id}/done`, { method: "POST" });
+        updateCounts(-1);
+        el.innerHTML = `
+          <div class="task-title"></div>
+          <div class="task-meta">Marked done</div>
+          <button class="button warn" type="button" data-action="undo">Undo</button>`;
+        el.querySelector(".task-title").textContent = task.title;
+        el.querySelector('[data-action="undo"]').addEventListener("click", async () => {
+          await mutate(() => api(`/api/tasks/${task.id}/undo`, { method: "POST" }), "Task restored");
+        });
+        showToast("Task marked done");
+      } catch (err) {
+        showToast(err.message);
+      } finally {
+        state.busy = false;
+      }
     }
 
     function renderParking(parking) {
@@ -372,7 +476,7 @@
       const tasks = $("tasks");
       tasks.innerHTML = "";
       if (!data.tasks.length) {
-        tasks.innerHTML = `<div class="empty">No current tasks. Send a task or voice note in Telegram when you want to capture something.</div>`;
+        tasks.innerHTML = `<div class="empty">No current tasks. Add one above or send a task in Telegram.</div>`;
         return;
       }
       data.tasks.forEach((task) => tasks.appendChild(taskCard(task)));
@@ -390,13 +494,13 @@
       }
     }
 
-    async function mutate(fn, message) {
+    async function mutate(fn, message, reload = true) {
       if (state.busy) return;
       state.busy = true;
       try {
         await fn();
         showToast(message);
-        await load();
+        if (reload) await load();
       } catch (err) {
         showToast(err.message);
       } finally {
@@ -404,12 +508,14 @@
       }
     }
 
-    function saveCurrentParking() {
+    async function saveCurrentParking() {
       if (!navigator.geolocation) {
         showToast("Location is not available on this device");
         return;
       }
+      await permissionState("geolocation");
       navigator.geolocation.getCurrentPosition(async (pos) => {
+        rememberAllowed("geolocation");
         const bay = prompt("Bay, row, or floor?", "") || "";
         await mutate(() => api("/api/parking", {
           method: "POST",
@@ -419,10 +525,62 @@
             bay_number: bay.trim() || null
           })
         }), "Parking saved");
-      }, () => showToast("Location permission was not granted"), { enableHighAccuracy: true, timeout: 12000 });
+      }, () => {
+        forgetAllowed("geolocation");
+        showToast("Location permission was not granted");
+      }, { enableHighAccuracy: true, timeout: 12000 });
+    }
+
+    async function saveTask() {
+      const text = $("captureText").value.trim();
+      if (!text) return showToast("Type a task first");
+      await mutate(() => api("/api/capture", { method: "POST", body: JSON.stringify({ text }) }), "Task saved");
+      $("captureText").value = "";
+    }
+
+    async function toggleRecord() {
+      const button = $("recordTask");
+      if (state.recording) {
+        state.recorder.stop();
+        return;
+      }
+      if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+        showToast("Voice recording is not available here");
+        return;
+      }
+      await permissionState("microphone");
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        rememberAllowed("microphone");
+        state.chunks = [];
+        state.recorder = new MediaRecorder(stream);
+        state.recorder.ondataavailable = (event) => {
+          if (event.data.size) state.chunks.push(event.data);
+        };
+        state.recorder.onstop = async () => {
+          stream.getTracks().forEach((track) => track.stop());
+          state.recording = false;
+          button.textContent = "Record";
+          button.classList.remove("recording");
+          const blob = new Blob(state.chunks, { type: state.recorder.mimeType || "audio/webm" });
+          const formData = new FormData();
+          formData.append("file", blob, "atlas-voice.webm");
+          await mutate(() => upload("/api/capture/voice", formData), "Voice task saved");
+        };
+        state.recording = true;
+        button.textContent = "Stop";
+        button.classList.add("recording");
+        state.recorder.start();
+      } catch (_err) {
+        forgetAllowed("microphone");
+        showToast("Microphone permission was not granted");
+      }
     }
 
     $("refresh").addEventListener("click", load);
+    $("saveTask").addEventListener("click", saveTask);
+    $("recordTask").addEventListener("click", toggleRecord);
+    $("clearCapture").addEventListener("click", () => { $("captureText").value = ""; });
     load();
   </script>
 </body>
