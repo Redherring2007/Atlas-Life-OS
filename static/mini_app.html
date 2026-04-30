@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Atlas Life OS</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101418;
+      --panel: #171d23;
+      --panel-2: #1e262e;
+      --line: #303a44;
+      --text: #f5f1e8;
+      --muted: #a9b3bc;
+      --gold: #d6b66d;
+      --green: #67d391;
+      --red: #ff7a7a;
+      --blue: #88b8ff;
+      --radius: 8px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    button, input { font: inherit; }
+
+    .shell {
+      width: min(720px, 100%);
+      margin: 0 auto;
+      padding: 18px 14px calc(24px + env(safe-area-inset-bottom));
+    }
+
+    .topbar {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 4px 2px 16px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 24px;
+      line-height: 1.1;
+      font-weight: 760;
+    }
+
+    .subtle {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: var(--green);
+      box-shadow: 0 0 0 4px rgba(103, 211, 145, .13);
+      margin-top: 8px;
+      flex: 0 0 auto;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .metric, .section, .task, .parking {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+    }
+
+    .metric {
+      padding: 12px;
+      min-height: 72px;
+    }
+
+    .metric strong {
+      display: block;
+      font-size: 24px;
+      line-height: 1;
+      margin-bottom: 7px;
+      color: var(--gold);
+    }
+
+    .section {
+      padding: 14px;
+      margin-top: 10px;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: 15px;
+      line-height: 1.2;
+      font-weight: 720;
+    }
+
+    .task-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .task {
+      padding: 12px;
+      background: var(--panel-2);
+    }
+
+    .task-title {
+      font-size: 15px;
+      line-height: 1.35;
+      margin-bottom: 8px;
+    }
+
+    .task-meta {
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 10px;
+    }
+
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .button {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      min-height: 42px;
+      color: var(--text);
+      background: #242d36;
+      padding: 10px 12px;
+      cursor: pointer;
+      text-align: center;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      white-space: normal;
+    }
+
+    .button.primary { background: var(--gold); color: #17130b; border-color: var(--gold); font-weight: 720; }
+    .button.success { background: rgba(103, 211, 145, .14); border-color: rgba(103, 211, 145, .55); }
+    .button.warn { background: rgba(214, 182, 109, .13); border-color: rgba(214, 182, 109, .55); }
+    .button.danger { background: rgba(255, 122, 122, .12); border-color: rgba(255, 122, 122, .48); }
+    .button:disabled { opacity: .55; cursor: wait; }
+
+    .parking {
+      padding: 12px;
+      background: var(--panel-2);
+    }
+
+    .parking-line {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+      margin: 4px 0 12px;
+    }
+
+    .parking-form {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    input {
+      min-width: 0;
+      height: 42px;
+      border-radius: var(--radius);
+      border: 1px solid var(--line);
+      background: #101820;
+      color: var(--text);
+      padding: 0 12px;
+      outline: none;
+    }
+
+    .empty {
+      color: var(--muted);
+      padding: 14px 2px 4px;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .toast {
+      position: fixed;
+      left: 14px;
+      right: 14px;
+      bottom: calc(14px + env(safe-area-inset-bottom));
+      padding: 12px 14px;
+      background: #0d1115;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      color: var(--text);
+      box-shadow: 0 14px 44px rgba(0, 0, 0, .38);
+      display: none;
+      z-index: 5;
+    }
+
+    @media (max-width: 420px) {
+      .shell { padding-left: 10px; padding-right: 10px; }
+      .grid { grid-template-columns: 1fr; }
+      .metric { min-height: auto; }
+      .actions, .parking-form { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <h1>Atlas Life OS</h1>
+        <div id="timezone" class="subtle">Loading workspace</div>
+      </div>
+      <div class="status-dot" aria-hidden="true"></div>
+    </header>
+
+    <section class="grid" aria-label="Summary">
+      <div class="metric"><strong id="pendingCount">0</strong><span class="subtle">Current tasks</span></div>
+      <div class="metric"><strong id="todayCount">0</strong><span class="subtle">Due today</span></div>
+      <div class="metric"><strong id="parkingState">-</strong><span class="subtle">Parking</span></div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>Capture</h2>
+      </div>
+      <div class="subtle">Type or send a voice note in Telegram to add a task. Use this app to review, complete, snooze, and find your parked car.</div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>Parking</h2>
+      </div>
+      <div id="parkingPanel" class="parking"></div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>Current Tasks</h2>
+        <button id="refresh" class="button" type="button">Refresh</button>
+      </div>
+      <div id="tasks" class="task-list"></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    const tg = window.Telegram?.WebApp;
+    const initData = tg?.initData || "";
+    const state = { busy: false, data: null };
+
+    if (tg) {
+      tg.ready();
+      tg.expand();
+      tg.setHeaderColor("#101418");
+      tg.setBackgroundColor("#101418");
+      tg.MainButton.hide();
+    }
+
+    const $ = (id) => document.getElementById(id);
+
+    function showToast(message) {
+      const toast = $("toast");
+      toast.textContent = message;
+      toast.style.display = "block";
+      clearTimeout(showToast.timer);
+      showToast.timer = setTimeout(() => { toast.style.display = "none"; }, 2600);
+    }
+
+    async function api(path, options = {}) {
+      const res = await fetch(path, {
+        ...options,
+        headers: {
+          "Content-Type": "application/json",
+          "X-Telegram-Init-Data": initData,
+          ...(options.headers || {})
+        }
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || "Request failed");
+      }
+      return res.json();
+    }
+
+    function taskCard(task) {
+      const el = document.createElement("article");
+      el.className = "task";
+      el.innerHTML = `
+        <div class="task-title"></div>
+        <div class="task-meta"></div>
+        <div class="actions">
+          <button class="button success" type="button" data-action="done">Done</button>
+          <button class="button warn" type="button" data-action="snooze">20 min</button>
+        </div>`;
+      el.querySelector(".task-title").textContent = task.title;
+      el.querySelector(".task-meta").textContent = task.due_label;
+      el.querySelector('[data-action="done"]').addEventListener("click", async () => {
+        await mutate(() => api(`/api/tasks/${task.id}/done`, { method: "POST" }), "Task marked done");
+      });
+      el.querySelector('[data-action="snooze"]').addEventListener("click", async () => {
+        await mutate(() => api(`/api/tasks/${task.id}/snooze`, { method: "POST", body: JSON.stringify({ minutes: 20 }) }), "Reminder moved 20 minutes");
+      });
+      return el;
+    }
+
+    function renderParking(parking) {
+      const panel = $("parkingPanel");
+      panel.innerHTML = "";
+      if (!parking) {
+        panel.innerHTML = `
+          <div class="parking-line">No parking location saved.</div>
+          <button id="saveParking" class="button primary" type="button">Save current location</button>`;
+        $("saveParking").addEventListener("click", saveCurrentParking);
+        return;
+      }
+
+      const bay = parking.bay_number ? `Bay ${parking.bay_number}` : "No bay added";
+      panel.innerHTML = `
+        <div class="parking-line">${parking.updated_label || "Saved"}<br>${bay}</div>
+        <div class="actions">
+          <a class="button primary" href="${parking.maps_url}" target="_blank" rel="noopener">Directions</a>
+          <button id="clearParking" class="button danger" type="button">Picked up</button>
+        </div>
+        <div class="parking-form">
+          <input id="bayInput" placeholder="Bay, row, floor" value="${parking.bay_number || ""}" />
+          <button id="saveBay" class="button" type="button">Save bay</button>
+        </div>`;
+      $("clearParking").addEventListener("click", async () => {
+        await mutate(() => api("/api/parking", { method: "DELETE" }), "Parking cleared");
+      });
+      $("saveBay").addEventListener("click", async () => {
+        const value = $("bayInput").value.trim();
+        if (!value) return showToast("Add a bay number first");
+        await mutate(() => api("/api/parking/bay", { method: "POST", body: JSON.stringify({ bay_number: value }) }), "Bay saved");
+      });
+    }
+
+    function render(data) {
+      state.data = data;
+      $("timezone").textContent = data.timezone;
+      $("pendingCount").textContent = data.counts.pending;
+      $("todayCount").textContent = data.counts.today;
+      $("parkingState").textContent = data.parking ? "Saved" : "Open";
+      renderParking(data.parking);
+
+      const tasks = $("tasks");
+      tasks.innerHTML = "";
+      if (!data.tasks.length) {
+        tasks.innerHTML = `<div class="empty">No current tasks. Send a task or voice note in Telegram when you want to capture something.</div>`;
+        return;
+      }
+      data.tasks.forEach((task) => tasks.appendChild(taskCard(task)));
+    }
+
+    async function load() {
+      if (!initData) {
+        showToast("Open this from Telegram to sign in.");
+        return;
+      }
+      try {
+        render(await api("/api/me"));
+      } catch (err) {
+        showToast(err.message);
+      }
+    }
+
+    async function mutate(fn, message) {
+      if (state.busy) return;
+      state.busy = true;
+      try {
+        await fn();
+        showToast(message);
+        await load();
+      } catch (err) {
+        showToast(err.message);
+      } finally {
+        state.busy = false;
+      }
+    }
+
+    function saveCurrentParking() {
+      if (!navigator.geolocation) {
+        showToast("Location is not available on this device");
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(async (pos) => {
+        const bay = prompt("Bay, row, or floor?", "") || "";
+        await mutate(() => api("/api/parking", {
+          method: "POST",
+          body: JSON.stringify({
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+            bay_number: bay.trim() || null
+          })
+        }), "Parking saved");
+      }, () => showToast("Location permission was not granted"), { enableHighAccuracy: true, timeout: 12000 });
+    }
+
+    $("refresh").addEventListener("click", load);
+    load();
+  </script>
+</body>
+</html>
