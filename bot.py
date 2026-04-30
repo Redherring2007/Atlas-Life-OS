@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update, User
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update, User
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 from timezonefinder import TimezoneFinder
 
@@ -264,7 +264,7 @@ async def _home_payload(user_id: str) -> tuple[str, InlineKeyboardMarkup]:
         f"📅 Today {len(today)}\n"
         f"🚘 Parking {_parking_status(parking, local_timezone)}\n"
         f"📍 {local_timezone}\n\n"
-        "Speak or type a task whenever you want to capture something."
+        "Add a task by typing it here or sending a voice note."
     )
     return message, _home_buttons(parking)
 
@@ -292,7 +292,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     await update.message.reply_text(
         "🧭 Atlas Life OS commands\n\n"
-        "/start - open Atlas Life OS\n"
+        "/home - open Atlas Life OS\n"
         "/tasks - view current tasks\n"
         "/today - view tasks due today\n"
         "/overdue - view overdue tasks\n"
@@ -672,7 +672,15 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def on_startup(application: Application) -> None:
     global REMINDER_STOP_EVENT, REMINDER_TASK
     await asyncio.to_thread(ensure_schema)
-    logger.info("Database schema is ready")
+    await application.bot.set_my_commands(
+        [
+            BotCommand("home", "Open Atlas Life OS"),
+            BotCommand("tasks", "View current tasks"),
+            BotCommand("today", "View tasks due today"),
+            BotCommand("help", "Show commands"),
+        ]
+    )
+    logger.info("Database schema and Telegram command menu are ready")
     REMINDER_STOP_EVENT = asyncio.Event()
     REMINDER_TASK = asyncio.create_task(reminder_worker(application, REMINDER_STOP_EVENT))
 
@@ -693,6 +701,7 @@ def build_application() -> Application:
         .build()
     )
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("home", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("tasks", tasks_command))
     application.add_handler(CommandHandler("today", today_command))
