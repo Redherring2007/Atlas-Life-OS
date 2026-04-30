@@ -49,18 +49,12 @@ def _transcribe_wav(path: Path) -> str:
     return text
 
 
-async def transcribe_voice_note(voice: Voice) -> str:
-    ogg_path: Path | None = None
+async def transcribe_audio_path(source_path: Path) -> str:
     wav_path: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as ogg_file:
-            ogg_path = Path(ogg_file.name)
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as wav_file:
             wav_path = Path(wav_file.name)
-
-        telegram_file = await voice.get_file()
-        await telegram_file.download_to_drive(custom_path=str(ogg_path))
-        await asyncio.to_thread(_convert_to_wav, ogg_path, wav_path)
+        await asyncio.to_thread(_convert_to_wav, source_path, wav_path)
         return await asyncio.to_thread(_transcribe_wav, wav_path)
     except FileNotFoundError as exc:
         raise VoiceTranscriptionError("ffmpeg is not installed or is not available on PATH.") from exc
@@ -71,9 +65,25 @@ async def transcribe_voice_note(voice: Voice) -> str:
     except Exception as exc:
         raise VoiceTranscriptionError("I could not transcribe that voice note. Please try again or send text.") from exc
     finally:
-        for path in (ogg_path, wav_path):
-            if path:
-                try:
-                    os.remove(path)
-                except FileNotFoundError:
-                    pass
+        if wav_path:
+            try:
+                os.remove(wav_path)
+            except FileNotFoundError:
+                pass
+
+
+async def transcribe_voice_note(voice: Voice) -> str:
+    ogg_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as ogg_file:
+            ogg_path = Path(ogg_file.name)
+
+        telegram_file = await voice.get_file()
+        await telegram_file.download_to_drive(custom_path=str(ogg_path))
+        return await transcribe_audio_path(ogg_path)
+    finally:
+        if ogg_path:
+            try:
+                os.remove(ogg_path)
+            except FileNotFoundError:
+                pass
