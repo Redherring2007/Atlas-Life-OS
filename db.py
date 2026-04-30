@@ -40,6 +40,18 @@ create table if not exists public.user_settings (
     updated_at timestamptz default now()
 );
 
+create table if not exists public.parking_locations (
+    telegram_user_id text primary key,
+    telegram_chat_id text not null,
+    latitude double precision not null,
+    longitude double precision not null,
+    bay_number text null,
+    active boolean default true,
+    created_at timestamptz default now(),
+    updated_at timestamptz default now(),
+    cleared_at timestamptz null
+);
+
 create or replace function public.set_updated_at()
 returns trigger as $$
 begin
@@ -60,10 +72,17 @@ before update on public.user_settings
 for each row
 execute function public.set_updated_at();
 
+drop trigger if exists parking_locations_set_updated_at on public.parking_locations;
+create trigger parking_locations_set_updated_at
+before update on public.parking_locations
+for each row
+execute function public.set_updated_at();
+
 create index if not exists tasks_telegram_user_status_idx on public.tasks (telegram_user_id, status);
 create index if not exists tasks_due_at_idx on public.tasks (due_at);
 create index if not exists tasks_reminder_sent_status_idx on public.tasks (reminder_sent, status);
 create index if not exists tasks_created_at_idx on public.tasks (created_at);
+create index if not exists parking_locations_active_idx on public.parking_locations (telegram_user_id, active);
 """
 
 
@@ -97,6 +116,12 @@ def _serialize_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [_serialize_task(task) for task in tasks if task is not None]
 
 
+def _serialize_parking(parking: dict[str, Any] | None) -> dict[str, Any] | None:
+    if parking is None:
+        return None
+    return {key: _serialize_value(value) for key, value in parking.items()}
+
+
 def get_user_timezone(telegram_user_id: str) -> str:
     with _connect() as conn:
         with conn.cursor() as cur:
@@ -117,6 +142,79 @@ def set_user_timezone(telegram_user_id: str, timezone_name: str) -> None:
                 """,
                 (str(telegram_user_id), timezone_name),
             )
+
+
+def get_active_parking(telegram_user_id: str) -> dict[str, Any] | None:
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select *
+                from parking_locations
+                where telegram_user_id = %s and active = true
+                """,
+                (str(telegram_user_id),),
+            )
+            return _serialize_parking(cur.fetchone())
+
+
+def save_parking_location(telegram_user_id: str, telegram_chat_id: str, latitude: float, longitude: float) -> dict[str, Any]:
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                insert into parking_locations (
+                    telegram_user_id,
+                    telegram_chat_id,
+                    latitude,
+                    longitude,
+                    bay_number,
+                    active,
+                    cleared_at
+                )
+                values (%s, %s, %s, %s, null, true, null)
+                on conflict (telegram_user_id)
+                do update set telegram_chat_id = excluded.telegram_chat_id,
+                              latitude = excluded.latitude,
+                              longitude = excluded.longitude,
+                              bay_number = null,
+                              active = true,
+                              cleared_at = null
+                returning *
+                """,
+                (str(telegram_user_id), str(telegram_chat_id), latitude, longitude),
+            )
+            return _serialize_parking(cur.fetchone())
+
+
+def set_parking_bay(telegram_user_id: str, bay_number: str) -> dict[str, Any] | None:
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                update parking_locations
+                set bay_number = %s
+                where telegram_user_id = %s and active = true
+                returning *
+                """,
+                (bay_number[:80], str(telegram_user_id)),
+            )
+            return _serialize_parking(cur.fetchone())
+
+
+def clear_parking_location(telegram_user_id: str) -> dict[str, Any] | None:
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                update parking_locations
+                set active = false, cleared_at = now()
+                where telegram_user_id = %s and active = true
+                returning *
+                """,
+                (str(telegram_user_id),),
+            )
+            return _serialize_parking(cur.fetchone())
 
 
 def create_task(task: dict[str, Any]) -> dict[str, Any]:
