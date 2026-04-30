@@ -40,6 +40,17 @@ create table if not exists public.user_settings (
     updated_at timestamptz default now()
 );
 
+create table if not exists public.user_access (
+    telegram_user_id text primary key,
+    access_enabled boolean not null default true,
+    telegram_username text null,
+    first_name text null,
+    last_name text null,
+    first_seen_at timestamptz default now(),
+    last_seen_at timestamptz default now(),
+    updated_at timestamptz default now()
+);
+
 create table if not exists public.parking_locations (
     telegram_user_id text primary key,
     telegram_chat_id text not null,
@@ -72,6 +83,12 @@ before update on public.user_settings
 for each row
 execute function public.set_updated_at();
 
+drop trigger if exists user_access_set_updated_at on public.user_access;
+create trigger user_access_set_updated_at
+before update on public.user_access
+for each row
+execute function public.set_updated_at();
+
 drop trigger if exists parking_locations_set_updated_at on public.parking_locations;
 create trigger parking_locations_set_updated_at
 before update on public.parking_locations
@@ -82,6 +99,7 @@ create index if not exists tasks_telegram_user_status_idx on public.tasks (teleg
 create index if not exists tasks_due_at_idx on public.tasks (due_at);
 create index if not exists tasks_reminder_sent_status_idx on public.tasks (reminder_sent, status);
 create index if not exists tasks_created_at_idx on public.tasks (created_at);
+create index if not exists user_access_enabled_idx on public.user_access (access_enabled);
 create index if not exists parking_locations_active_idx on public.parking_locations (telegram_user_id, active);
 """
 
@@ -120,6 +138,37 @@ def _serialize_parking(parking: dict[str, Any] | None) -> dict[str, Any] | None:
     if parking is None:
         return None
     return {key: _serialize_value(value) for key, value in parking.items()}
+
+
+def ensure_user_access(
+    telegram_user_id: str,
+    telegram_username: str | None = None,
+    first_name: str | None = None,
+    last_name: str | None = None,
+) -> bool:
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                insert into user_access (
+                    telegram_user_id,
+                    telegram_username,
+                    first_name,
+                    last_name,
+                    access_enabled
+                )
+                values (%s, %s, %s, %s, true)
+                on conflict (telegram_user_id)
+                do update set telegram_username = excluded.telegram_username,
+                              first_name = excluded.first_name,
+                              last_name = excluded.last_name,
+                              last_seen_at = now()
+                returning access_enabled
+                """,
+                (str(telegram_user_id), telegram_username, first_name, last_name),
+            )
+            row = cur.fetchone()
+            return bool(row and row["access_enabled"])
 
 
 def get_user_timezone(telegram_user_id: str) -> str:
@@ -450,9 +499,11 @@ def fetch_due_reminder_tasks() -> list[dict[str, Any]]:
                 select tasks.*, coalesce(user_settings.timezone, %s) as user_timezone
                 from tasks
                 left join user_settings on user_settings.telegram_user_id = tasks.telegram_user_id
+                left join user_access on user_access.telegram_user_id = tasks.telegram_user_id
                 where status = 'pending'
                   and reminder_sent = false
                   and due_at <= %s
+                  and coalesce(user_access.access_enabled, true) = true
                 order by {TASK_ORDER}
                 """,
                 (config.local_timezone, now),
