@@ -12,17 +12,21 @@ from timezonefinder import TimezoneFinder
 
 from config import config
 from db import (
+    clear_parking_location,
     complete_task_by_id,
     complete_task_by_number,
     create_task,
     delete_task_by_number,
     ensure_schema,
+    get_active_parking,
     get_task_by_id,
     get_user_timezone,
     list_overdue_tasks,
     list_pending_tasks,
     list_today_tasks,
     restore_task_by_id,
+    save_parking_location,
+    set_parking_bay,
     set_user_timezone,
     snooze_task_by_id,
     update_task_by_id,
@@ -37,6 +41,8 @@ APP_NAME = "Atlas Life OS"
 TIMEZONE_FINDER = TimezoneFinder()
 EDITING_TASK_KEY = "editing_task_id"
 EDITING_MODE_KEY = "editing_mode"
+LOCATION_MODE_KEY = "location_mode"
+PARKING_BAY_MODE_KEY = "parking_bay_mode"
 MENU_CURRENT_TASKS = "📋 Current Tasks"
 MENU_DUE_TODAY = "📅 Due Today"
 MENU_UPDATE_TIME = "📍 Update Local Time"
@@ -60,12 +66,26 @@ def _format_due(value: str | None, local_timezone: str) -> str:
         return value
 
 
-def _location_keyboard() -> ReplyKeyboardMarkup:
+def _format_local_time(value: str | None, local_timezone: str) -> str:
+    if not value:
+        return "Just now"
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(ZoneInfo(local_timezone))
+        return dt.strftime("%a %d %b, %I:%M %p").lstrip("0")
+    except ValueError:
+        return value
+
+
+def _maps_url(parking: dict[str, Any]) -> str:
+    return f"https://www.google.com/maps/search/?api=1&query={parking['latitude']},{parking['longitude']}"
+
+
+def _location_keyboard(label: str = "📍 Share location") -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [[KeyboardButton("📍 Share location", request_location=True)]],
+        [[KeyboardButton(label, request_location=True)]],
         resize_keyboard=True,
         one_time_keyboard=True,
-        input_field_placeholder="Share location to update local time...",
+        input_field_placeholder="Share location...",
     )
 
 
@@ -92,8 +112,7 @@ def _task_card(task: dict[str, Any], local_timezone: str, heading: str = "Task",
     return (
         f"{icon} {heading}\n\n"
         f"{task['title']}\n\n"
-        f"⏰ Due\n"
-        f"{_format_due(task.get('due_at'), local_timezone)}"
+        f"⏰ {_format_due(task.get('due_at'), local_timezone)}"
     )
 
 
@@ -107,9 +126,43 @@ def _task_buttons(task: dict[str, Any], include_snooze: bool = False) -> InlineK
     return InlineKeyboardMarkup(rows)
 
 
-def _home_buttons() -> InlineKeyboardMarkup:
+def _parking_status(parking: dict[str, Any] | None, local_timezone: str) -> str:
+    if not parking:
+        return "Not logged"
+    bay = parking.get("bay_number") or "No bay added"
+    saved = _format_local_time(parking.get("updated_at") or parking.get("created_at"), local_timezone)
+    return f"Saved {saved} · {bay}"
+
+
+def _parking_message(parking: dict[str, Any], local_timezone: str) -> str:
+    bay = parking.get("bay_number")
+    lines = [
+        "🚘 Parked car",
+        "",
+        f"📍 Location saved",
+        f"🕒 {_format_local_time(parking.get('updated_at') or parking.get('created_at'), local_timezone)}",
+    ]
+    if bay:
+        lines.append(f"🅿️ Bay {bay}")
+    return "\n".join(lines)
+
+
+def _parking_buttons(parking: dict[str, Any]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
+            [InlineKeyboardButton("🧭 Directions", url=_maps_url(parking))],
+            [InlineKeyboardButton("🅿️ Add bay number", callback_data="parking:bay")],
+            [InlineKeyboardButton("✅ Picked up car", callback_data="parking:clear")],
+            [InlineKeyboardButton("↩️ Home", callback_data="home")],
+        ]
+    )
+
+
+def _home_buttons(parking: dict[str, Any] | None) -> InlineKeyboardMarkup:
+    parking_label = "🚘 Find parked car" if parking else "🚘 Log parking"
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(parking_label, callback_data="parking")],
             [InlineKeyboardButton("📋 Current tasks", callback_data="tasks:pending")],
             [InlineKeyboardButton("📅 Due today", callback_data="tasks:today")],
             [InlineKeyboardButton("📍 Update local time", callback_data="time:update")],
@@ -169,33 +222,36 @@ def _task_updates(text: str, parsed: ParsedTask) -> dict[str, Any]:
     }
 
 
-async def _home_message(user_id: str) -> str:
+async def _home_payload(user_id: str) -> tuple[str, InlineKeyboardMarkup]:
     local_timezone = await asyncio.to_thread(get_user_timezone, user_id)
-    pending, today = await asyncio.gather(
+    pending, today, parking = await asyncio.gather(
         asyncio.to_thread(list_pending_tasks, user_id),
         asyncio.to_thread(list_today_tasks, user_id),
+        asyncio.to_thread(get_active_parking, user_id),
     )
-    return (
+    message = (
         f"🧭 {APP_NAME}\n\n"
-        f"📋 Current tasks: {len(pending)}\n"
-        f"📅 Due today: {len(today)}\n"
-        f"📍 Local time: {local_timezone}\n\n"
+        f"📋 Tasks {len(pending)}\n"
+        f"📅 Today {len(today)}\n"
+        f"🚘 Parking {_parking_status(parking, local_timezone)}\n"
+        f"📍 {local_timezone}\n\n"
         "Speak or type a task whenever you want to capture something."
     )
+    return message, _home_buttons(parking)
 
 
 async def _send_home(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        await _home_message(str(update.effective_user.id)),
-        reply_markup=_home_buttons(),
-    )
+    message, buttons = await _home_payload(str(update.effective_user.id))
+    await update.message.reply_text(message, reply_markup=buttons)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop(EDITING_TASK_KEY, None)
     context.user_data.pop(EDITING_MODE_KEY, None)
+    context.user_data.pop(LOCATION_MODE_KEY, None)
+    context.user_data.pop(PARKING_BAY_MODE_KEY, None)
     if update.message and not context.user_data.get(REPLY_KEYBOARD_REMOVED_KEY):
-        await update.message.reply_text("Controls updated.", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text("Atlas controls refreshed.", reply_markup=ReplyKeyboardRemove())
         context.user_data[REPLY_KEYBOARD_REMOVED_KEY] = True
     await _send_home(update, context)
 
@@ -281,12 +337,47 @@ async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     location = update.message.location
+    user_id = str(update.effective_user.id)
+    chat_id = str(update.effective_chat.id)
+    mode = context.user_data.pop(LOCATION_MODE_KEY, None)
+    if mode == "parking":
+        parking = await asyncio.to_thread(save_parking_location, user_id, chat_id, location.latitude, location.longitude)
+        context.user_data[PARKING_BAY_MODE_KEY] = True
+        local_timezone = await asyncio.to_thread(get_user_timezone, user_id)
+        await update.message.reply_text(
+            _parking_message(parking, local_timezone) + "\n\nSend a bay number now, or tap Skip.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        await update.message.reply_text(
+            "Parking details",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [InlineKeyboardButton("🅿️ Skip bay", callback_data="parking:skip_bay")],
+                    [InlineKeyboardButton("🧭 Directions", url=_maps_url(parking))],
+                ]
+            ),
+        )
+        return
+
     timezone_name = TIMEZONE_FINDER.timezone_at(lat=location.latitude, lng=location.longitude)
     if not timezone_name:
         await update.message.reply_text("I could not detect a timezone from that location.")
         return
-    await asyncio.to_thread(set_user_timezone, str(update.effective_user.id), timezone_name)
+    await asyncio.to_thread(set_user_timezone, user_id, timezone_name)
     await update.message.reply_text(f"📍 Local time updated\n\n{timezone_name}", reply_markup=ReplyKeyboardRemove())
+
+
+async def _handle_parking_bay_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> bool:
+    if not context.user_data.get(PARKING_BAY_MODE_KEY):
+        return False
+    context.user_data.pop(PARKING_BAY_MODE_KEY, None)
+    parking = await asyncio.to_thread(set_parking_bay, str(update.effective_user.id), text.strip())
+    if not parking:
+        await update.message.reply_text("No parked car is currently logged.")
+        return True
+    local_timezone = await asyncio.to_thread(get_user_timezone, str(update.effective_user.id))
+    await update.message.reply_text(_parking_message(parking, local_timezone), reply_markup=_parking_buttons(parking))
+    return True
 
 
 async def _handle_edit_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, task_id: str, local_timezone: str) -> bool:
@@ -321,6 +412,8 @@ async def _handle_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     if text == MENU_BACK:
         context.user_data.pop(EDITING_TASK_KEY, None)
         context.user_data.pop(EDITING_MODE_KEY, None)
+        context.user_data.pop(LOCATION_MODE_KEY, None)
+        context.user_data.pop(PARKING_BAY_MODE_KEY, None)
         await update.message.reply_text("↩️ Back to Atlas Life OS")
         return True
     if text == MENU_CURRENT_TASKS:
@@ -336,7 +429,8 @@ async def _handle_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     if text == MENU_UPDATE_TIME:
         context.user_data.pop(EDITING_TASK_KEY, None)
         context.user_data.pop(EDITING_MODE_KEY, None)
-        await update.message.reply_text("📍 Tap the location button below to update local time.", reply_markup=_location_keyboard())
+        context.user_data[LOCATION_MODE_KEY] = "timezone"
+        await update.message.reply_text("📍 Share your location to update local time.", reply_markup=_location_keyboard())
         return True
     return False
 
@@ -346,6 +440,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not text:
         return
     try:
+        if await _handle_parking_bay_text(update, context, text):
+            return
         if await _handle_menu_text(update, context, text):
             return
         local_timezone = await asyncio.to_thread(get_user_timezone, str(update.effective_user.id))
@@ -392,20 +488,66 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if data == "home":
         context.user_data.pop(EDITING_TASK_KEY, None)
         context.user_data.pop(EDITING_MODE_KEY, None)
-        await query.edit_message_text(await _home_message(user_id), reply_markup=_home_buttons())
+        context.user_data.pop(LOCATION_MODE_KEY, None)
+        context.user_data.pop(PARKING_BAY_MODE_KEY, None)
+        message, buttons = await _home_payload(user_id)
+        await query.edit_message_text(message, reply_markup=buttons)
         return
 
     if data == "cancel_edit":
         context.user_data.pop(EDITING_TASK_KEY, None)
         context.user_data.pop(EDITING_MODE_KEY, None)
-        await query.edit_message_text(await _home_message(user_id), reply_markup=_home_buttons())
+        message, buttons = await _home_payload(user_id)
+        await query.edit_message_text(message, reply_markup=buttons)
         return
 
     if data == "time:update":
         context.user_data.pop(EDITING_TASK_KEY, None)
         context.user_data.pop(EDITING_MODE_KEY, None)
+        context.user_data[LOCATION_MODE_KEY] = "timezone"
         await query.edit_message_text("📍 Share your location to update local time.")
         await query.message.reply_text("Location update", reply_markup=_location_keyboard())
+        return
+
+    if data == "parking":
+        context.user_data.pop(EDITING_TASK_KEY, None)
+        context.user_data.pop(EDITING_MODE_KEY, None)
+        parking = await asyncio.to_thread(get_active_parking, user_id)
+        if parking:
+            await query.edit_message_text(_parking_message(parking, local_timezone), reply_markup=_parking_buttons(parking))
+            return
+        context.user_data[LOCATION_MODE_KEY] = "parking"
+        await query.edit_message_text("🚘 Log parking\n\nShare your current location while you are beside the car.")
+        await query.message.reply_text("Parking location", reply_markup=_location_keyboard("🚘 Save parking location"))
+        return
+
+    if data == "parking:bay":
+        context.user_data[PARKING_BAY_MODE_KEY] = True
+        await query.edit_message_text(
+            "🅿️ Parking bay\n\nSend the bay, row, floor, or zone number.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Back", callback_data="parking")]]),
+        )
+        return
+
+    if data == "parking:skip_bay":
+        context.user_data.pop(PARKING_BAY_MODE_KEY, None)
+        parking = await asyncio.to_thread(get_active_parking, user_id)
+        if parking:
+            await query.edit_message_text(_parking_message(parking, local_timezone), reply_markup=_parking_buttons(parking))
+        else:
+            message, buttons = await _home_payload(user_id)
+            await query.edit_message_text(message, reply_markup=buttons)
+        return
+
+    if data == "parking:clear":
+        context.user_data.pop(PARKING_BAY_MODE_KEY, None)
+        parking = await asyncio.to_thread(clear_parking_location, user_id)
+        if parking:
+            message, buttons = await _home_payload(user_id)
+            await query.edit_message_text("✅ Parking cleared", reply_markup=buttons)
+            await query.message.reply_text(message, reply_markup=buttons)
+        else:
+            await query.edit_message_text("No parked car is currently logged.")
         return
 
     if data == "tasks:pending":
