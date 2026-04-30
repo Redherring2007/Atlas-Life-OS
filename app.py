@@ -4,8 +4,9 @@ import asyncio
 import logging
 
 import uvicorn
+from telegram import Update
 
-from bot import build_application
+from bot import build_application, on_shutdown, on_startup
 from config import config
 from mini_app import app as web_app
 
@@ -16,9 +17,10 @@ logger = logging.getLogger("atlas_life_os")
 async def main() -> None:
     telegram_app = build_application()
     await telegram_app.initialize()
+    await on_startup(telegram_app)
     await telegram_app.start()
     if telegram_app.updater:
-        await telegram_app.updater.start_polling(allowed_updates=None)
+        await telegram_app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
     logger.info("Telegram bot started")
 
     server = uvicorn.Server(
@@ -35,6 +37,7 @@ async def main() -> None:
     finally:
         if telegram_app.updater:
             await telegram_app.updater.stop()
+        await on_shutdown(telegram_app)
         await telegram_app.stop()
         await telegram_app.shutdown()
 
