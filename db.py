@@ -29,6 +29,7 @@ create table if not exists public.tasks (
     priority text not null,
     status text default 'pending',
     reminder_sent boolean default false,
+    reminder_offset_minutes integer not null default 0,
     created_at timestamptz default now(),
     updated_at timestamptz default now(),
     completed_at timestamptz null
@@ -70,6 +71,8 @@ begin
     return new;
 end;
 $$ language plpgsql;
+
+alter table public.tasks add column if not exists reminder_offset_minutes integer not null default 0;
 
 drop trigger if exists tasks_set_updated_at on public.tasks;
 create trigger tasks_set_updated_at
@@ -267,6 +270,7 @@ def clear_parking_location(telegram_user_id: str) -> dict[str, Any] | None:
 
 
 def create_task(task: dict[str, Any]) -> dict[str, Any]:
+    task = {**task, "reminder_offset_minutes": task.get("reminder_offset_minutes", 0)}
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -280,7 +284,8 @@ def create_task(task: dict[str, Any]) -> dict[str, Any]:
                     title,
                     due_at,
                     category,
-                    priority
+                    priority,
+                    reminder_offset_minutes
                 )
                 values (
                     %(telegram_user_id)s,
@@ -291,11 +296,28 @@ def create_task(task: dict[str, Any]) -> dict[str, Any]:
                     %(title)s,
                     %(due_at)s,
                     %(category)s,
-                    %(priority)s
+                    %(priority)s,
+                    coalesce(%(reminder_offset_minutes)s, 0)
                 )
                 returning *
                 """,
                 task,
+            )
+            return _serialize_task(cur.fetchone())
+
+
+def set_task_reminder_offset(telegram_user_id: str, task_id: str, minutes: int) -> dict[str, Any] | None:
+    minutes = max(0, min(minutes, 1440))
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                update tasks
+                set reminder_offset_minutes = %s, reminder_sent = false
+                where id = %s and telegram_user_id = %s and status = 'pending'
+                returning *
+                """,
+                (minutes, task_id, str(telegram_user_id)),
             )
             return _serialize_task(cur.fetchone())
 
@@ -502,7 +524,7 @@ def fetch_due_reminder_tasks() -> list[dict[str, Any]]:
                 left join user_access on user_access.telegram_user_id = tasks.telegram_user_id
                 where status = 'pending'
                   and reminder_sent = false
-                  and due_at <= %s
+                  and due_at <= (%s + (coalesce(reminder_offset_minutes, 0) * interval '1 minute'))
                   and coalesce(user_access.access_enabled, true) = true
                 order by {TASK_ORDER}
                 """,

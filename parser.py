@@ -27,6 +27,15 @@ TIME_WORDS = r"(?:today|tomorrow|tonight|morning|afternoon|evening|monday|tuesda
 DATE_CONTEXT = r"\b(?:today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next week|in \d+\s+(?:minutes?|hours?|days?|weeks?))\b"
 TIME_CUE = r"(?:at|by|for|around|about|before|after)"
 MERIDIEM = r"(?:[ap]\.?\s?m\.?)"
+WEEKDAYS = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
 
 
 @dataclass(frozen=True)
@@ -49,6 +58,7 @@ def _dateparser_settings(local_timezone: str) -> dict[str, Any]:
     return {
         "PREFER_DATES_FROM": "future",
         "RETURN_AS_TIMEZONE_AWARE": True,
+        "RELATIVE_BASE": datetime.now(ZoneInfo(local_timezone)),
         "TIMEZONE": local_timezone,
         "TO_TIMEZONE": "UTC",
     }
@@ -99,7 +109,7 @@ def _coerce_clock(hour: int, minute: int, meridiem: str | None, local_timezone: 
     return _utc_iso(due)
 
 
-def _clock_due_at(text: str, local_timezone: str) -> str | None:
+def _clock_components(text: str) -> tuple[int, int, str | None] | None:
     patterns = [
         rf"\b{TIME_CUE}\s+(?P<hour>\d{{1,2}}):(?P<minute>\d{{2}})\s*(?P<meridiem>{MERIDIEM})?\b",
         rf"\b{TIME_CUE}\s+(?P<hhmm>\d{{3,4}})\s*(?P<meridiem>{MERIDIEM})?\b",
@@ -120,10 +130,53 @@ def _clock_due_at(text: str, local_timezone: str) -> str | None:
         else:
             hour = int(values["hour"])
             minute = int(values.get("minute") or 0)
-        due_at = _coerce_clock(hour, minute, values.get("meridiem"), local_timezone)
-        if due_at:
-            return due_at
+        if hour <= 23 and minute <= 59:
+            return hour, minute, values.get("meridiem")
     return None
+
+
+def _coerced_clock_values(hour: int, minute: int, meridiem: str | None) -> tuple[int, int] | None:
+    if hour > 23 or minute > 59:
+        return None
+    meridiem = _normalized_meridiem(meridiem)
+    if meridiem:
+        if hour > 12:
+            return None
+        if meridiem == "pm" and hour != 12:
+            hour += 12
+        if meridiem == "am" and hour == 12:
+            hour = 0
+    return hour, minute
+
+
+def _weekday_due_at(text: str, local_timezone: str) -> str | None:
+    match = re.search(r"\b(" + "|".join(WEEKDAYS) + r")\b", text, flags=re.IGNORECASE)
+    if not match:
+        return None
+    local_tz = ZoneInfo(local_timezone)
+    now = datetime.now(local_tz)
+    target_weekday = WEEKDAYS[match.group(1).lower()]
+    days_ahead = (target_weekday - now.weekday()) % 7
+    if days_ahead == 0:
+        days_ahead = 7
+    clock = _clock_components(text)
+    if clock:
+        values = _coerced_clock_values(*clock)
+        if not values:
+            return None
+        hour, minute = values
+    else:
+        hour, minute = 9, 0
+    due = (now + timedelta(days=days_ahead)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return _utc_iso(due)
+
+
+def _clock_due_at(text: str, local_timezone: str) -> str | None:
+    clock = _clock_components(text)
+    if not clock:
+        return None
+    hour, minute, meridiem = clock
+    return _coerce_clock(hour, minute, meridiem, local_timezone)
 
 
 def _clean_title(text: str) -> str:
@@ -138,6 +191,9 @@ def _clean_title(text: str) -> str:
 
 def _fallback_due_at(text: str, local_timezone: str) -> str | None:
     normalized = _normalize_time_text(text)
+    weekday_due = _weekday_due_at(normalized, local_timezone)
+    if weekday_due:
+        return weekday_due
     if _has_date_context(normalized):
         parsed_due = _dateparser_due_at(normalized, local_timezone)
         if parsed_due:
@@ -172,11 +228,41 @@ def _fallback_priority(text: str) -> str:
     return "medium"
 
 
+def _friendly_day_label(due_at: str | None, local_timezone: str) -> str:
+    if not due_at:
+        return ""
+    try:
+        due = datetime.fromisoformat(due_at.replace("Z", "+00:00")).astimezone(ZoneInfo(local_timezone))
+    except ValueError:
+        return ""
+    today = datetime.now(ZoneInfo(local_timezone)).date()
+    if due.date() == today:
+        return " today"
+    if due.date() == today + timedelta(days=1):
+        return " tomorrow"
+    return ""
+
+
+def _personal_title(title: str, due_at: str | None, local_timezone: str) -> str:
+    cleaned = re.sub(r"\s+", " ", title).strip()
+    lowered = cleaned.lower()
+    for prefix in ("go to ", "get to "):
+        if lowered.startswith(prefix):
+            place = cleaned[len(prefix):].strip()
+            if place:
+                return f"You have {place}{_friendly_day_label(due_at, local_timezone)}"[:240]
+    if lowered in {"school", "work", "gym", "class", "college", "university"}:
+        return f"You have {cleaned}{_friendly_day_label(due_at, local_timezone)}"[:240]
+    return cleaned[:240] or "Untitled task"
+
+
 def fallback_parse_task(text: str, local_timezone: str) -> ParsedTask:
     normalized = _normalize_time_text(text)
+    due_at = _fallback_due_at(normalized, local_timezone)
+    title = _personal_title(_clean_title(normalized), due_at, local_timezone)
     return ParsedTask(
-        title=_clean_title(normalized),
-        due_at=_fallback_due_at(normalized, local_timezone),
+        title=title,
+        due_at=due_at,
         category=_fallback_category(normalized),
         priority=_fallback_priority(normalized),
     )
@@ -197,6 +283,7 @@ def _validate_openai_payload(payload: dict[str, Any], original: str, local_timez
         category = "task"
     if priority not in PRIORITIES:
         priority = "medium"
+    title = _personal_title(title, due_at, local_timezone)
     return ParsedTask(title=title, due_at=due_at, category=category, priority=priority)
 
 

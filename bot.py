@@ -28,6 +28,7 @@ from db import (
     restore_task_by_id,
     save_parking_location,
     set_parking_bay,
+    set_task_reminder_offset,
     set_user_timezone,
     snooze_task_by_id,
     update_task_by_id,
@@ -156,6 +157,12 @@ def _task_buttons(task: dict[str, Any], include_snooze: bool = False) -> InlineK
         InlineKeyboardButton("✏️ Edit", callback_data=f"edit:{task['id']}"),
         InlineKeyboardButton("✅ Done", callback_data=f"done:{task['id']}"),
     ]]
+    if task.get("due_at"):
+        rows.append([
+            InlineKeyboardButton("15 min before", callback_data=f"before:15:{task['id']}"),
+            InlineKeyboardButton("30 min", callback_data=f"before:30:{task['id']}"),
+            InlineKeyboardButton("1 hr", callback_data=f"before:60:{task['id']}"),
+        ])
     if include_snooze:
         rows.append([InlineKeyboardButton("⏰ Remind in 20 min", callback_data=f"snooze20:{task['id']}")])
     return InlineKeyboardMarkup(rows)
@@ -228,6 +235,8 @@ def _task_list_buttons(tasks: list[dict[str, Any]]) -> InlineKeyboardMarkup:
             InlineKeyboardButton(f"✏️ Edit {index}", callback_data=f"edit:{task['id']}"),
             InlineKeyboardButton(f"✅ Done {index}", callback_data=f"done:{task['id']}"),
         ])
+        if task.get("due_at"):
+            rows.append([InlineKeyboardButton(f"⏱ Before {index}", callback_data=f"beforemenu:{task['id']}")])
     rows.append([InlineKeyboardButton("🔄 Refresh", callback_data="tasks:pending")])
     rows.append([InlineKeyboardButton("↩️ Home", callback_data="home")])
     return InlineKeyboardMarkup(rows)
@@ -670,6 +679,33 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await query.edit_message_text(_task_card(task, local_timezone, "Restored", "↩️"), reply_markup=_task_buttons(task))
         else:
             await query.edit_message_text("That task could not be restored.")
+        return
+
+    if action == "beforemenu" and task_id:
+        await query.edit_message_text(
+            "⏱ Remind before\n\nChoose when Atlas should nudge you before the due time.",
+            reply_markup=InlineKeyboardMarkup(
+                [[
+                    InlineKeyboardButton("15 min", callback_data=f"before:15:{task_id}"),
+                    InlineKeyboardButton("30 min", callback_data=f"before:30:{task_id}"),
+                    InlineKeyboardButton("1 hr", callback_data=f"before:60:{task_id}"),
+                ], [InlineKeyboardButton("↩️ Back", callback_data="tasks:pending")]]
+            ),
+        )
+        return
+
+    if action == "before" and task_id:
+        _, minutes_text, selected_task_id = data.split(":", 2)
+        minutes = int(minutes_text)
+        task = await asyncio.to_thread(set_task_reminder_offset, user_id, selected_task_id, minutes)
+        if task:
+            label = "1 hour" if minutes == 60 else f"{minutes} minutes"
+            await query.edit_message_text(
+                _task_card(task, local_timezone, f"Reminder set {label} before", "⏱"),
+                reply_markup=_task_buttons(task),
+            )
+        else:
+            await query.edit_message_text("That task is already done or no longer available.")
         return
 
     if action == "snooze20" and task_id:

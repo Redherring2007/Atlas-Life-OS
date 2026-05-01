@@ -145,7 +145,7 @@
       gap: 8px;
     }
 
-    .capture-actions { margin-top: 8px; }
+    .capture-actions, .before-actions { margin-top: 8px; }
 
     .button {
       border: 1px solid var(--line);
@@ -379,6 +379,11 @@
           <button class="button success" type="button" data-action="done">Done</button>
           <button class="button" type="button" data-action="edit">Edit</button>
           <button class="button warn" type="button" data-action="snooze">20 min</button>
+        </div>
+        <div class="actions before-actions">
+          <button class="button" type="button" data-before="15">15 min before</button>
+          <button class="button" type="button" data-before="30">30 min</button>
+          <button class="button" type="button" data-before="60">1 hr</button>
         </div>`;
       el.querySelector(".task-title").textContent = task.title;
       el.querySelector(".task-meta").textContent = task.due_label;
@@ -386,6 +391,13 @@
       el.querySelector('[data-action="edit"]').addEventListener("click", () => renderTaskEditor(el, task));
       el.querySelector('[data-action="snooze"]').addEventListener("click", async () => {
         await mutate(() => api(`/api/tasks/${task.id}/snooze`, { method: "POST", body: JSON.stringify({ minutes: 20 }) }), "Reminder moved 20 minutes");
+      });
+      el.querySelectorAll("[data-before]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const minutes = Number(button.dataset.before);
+          const label = minutes === 60 ? "1 hour" : `${minutes} minutes`;
+          await mutate(() => api(`/api/tasks/${task.id}/reminder-before`, { method: "POST", body: JSON.stringify({ minutes }) }), `Reminder set ${label} before`);
+        });
       });
     }
 

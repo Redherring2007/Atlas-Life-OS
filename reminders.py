@@ -21,11 +21,48 @@ def _format_due(value: str | None, local_timezone: str) -> str:
         return value
 
 
+def _format_time(value: str | None, local_timezone: str) -> str:
+    if not value:
+        return "soon"
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(ZoneInfo(local_timezone))
+        return dt.strftime("%-I:%M %p") if hasattr(dt, "strftime") else dt.strftime("%I:%M %p").lstrip("0")
+    except ValueError:
+        return value
+
+
+def _greeting(local_timezone: str) -> str:
+    hour = datetime.now(ZoneInfo(local_timezone)).hour
+    if 5 <= hour < 12:
+        return "Morning"
+    if 12 <= hour < 18:
+        return "Hey"
+    if 18 <= hour < 22:
+        return "Evening"
+    return "Hey"
+
+
+def _task_phrase(title: str) -> str:
+    phrase = title.strip()
+    lowered = phrase.lower()
+    if lowered.startswith("you have " ):
+        phrase = phrase[9:]
+        lowered = phrase.lower()
+    for suffix in (" tomorrow", " today"):
+        if lowered.endswith(suffix):
+            phrase = phrase[: -len(suffix)]
+            break
+    if phrase.lower().startswith(("call ", "buy ", "send ", "check ", "pay ", "book ", "email ", "message ", "pick up ", "go to ")):
+        return phrase
+    return f"you have {phrase}"
+
+
 def _reminder_message(task: dict) -> str:
     local_timezone = task.get("user_timezone") or config.local_timezone
+    phrase = _task_phrase(task["title"])
+    due_time = _format_time(task.get("due_at"), local_timezone)
     return (
-        f"⏰ Reminder\n\n"
-        f"{task['title']}\n\n"
+        f"{_greeting(local_timezone)}. Don't forget, {phrase} at {due_time}.\n\n"
         f"Due\n"
         f"{_format_due(task.get('due_at'), local_timezone)}"
     )
@@ -37,6 +74,11 @@ def _reminder_buttons(task: dict) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton("✅ Done", callback_data=f"done:{task['id']}"),
                 InlineKeyboardButton("⏰ 20 min", callback_data=f"snooze20:{task['id']}"),
+            ],
+            [
+                InlineKeyboardButton("15 min before", callback_data=f"before:15:{task['id']}"),
+                InlineKeyboardButton("30 min", callback_data=f"before:30:{task['id']}"),
+                InlineKeyboardButton("1 hr", callback_data=f"before:60:{task['id']}"),
             ],
             [InlineKeyboardButton("📋 View tasks", callback_data="tasks:pending")],
         ]

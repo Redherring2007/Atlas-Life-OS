@@ -29,6 +29,7 @@ from db import (
     restore_task_by_id,
     save_parking_location,
     set_parking_bay,
+    set_task_reminder_offset,
     set_user_timezone,
     snooze_task_by_id,
     update_task_by_id,
@@ -68,6 +69,10 @@ class ParkingBayIn(BaseModel):
 
 class SnoozeIn(BaseModel):
     minutes: int = 20
+
+
+class ReminderBeforeIn(BaseModel):
+    minutes: int
 
 
 def _format_dt(value: str | None, local_timezone: str) -> str | None:
@@ -253,6 +258,16 @@ async def api_edit_task(task_id: str, payload: TaskEditIn, user: UserContext = D
     task = update_task_by_id(user.telegram_user_id, task_id, updates)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    return {"task": _task_payload(task, local_timezone)}
+
+
+@app.post("/api/tasks/{task_id}/reminder-before")
+def api_set_reminder_before(task_id: str, payload: ReminderBeforeIn, user: UserContext = Depends(current_user)) -> dict[str, Any]:
+    minutes = max(0, min(payload.minutes, 1440))
+    task = set_task_reminder_offset(user.telegram_user_id, task_id, minutes)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    local_timezone = get_user_timezone(user.telegram_user_id)
     return {"task": _task_payload(task, local_timezone)}
 
 

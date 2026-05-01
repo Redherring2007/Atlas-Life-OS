@@ -13,6 +13,7 @@ create table if not exists public.tasks (
     priority text not null,
     status text default 'pending',
     reminder_sent boolean default false,
+    reminder_offset_minutes integer not null default 0,
     created_at timestamptz default now(),
     updated_at timestamptz default now(),
     completed_at timestamptz null
@@ -31,6 +32,8 @@ begin
     return new;
 end;
 $$ language plpgsql;
+
+alter table public.tasks add column if not exists reminder_offset_minutes integer not null default 0;
 
 drop trigger if exists tasks_set_updated_at on public.tasks;
 create trigger tasks_set_updated_at
