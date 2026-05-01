@@ -155,16 +155,12 @@ def _task_card(task: dict[str, Any], local_timezone: str, heading: str = "Task",
 def _task_buttons(task: dict[str, Any], include_snooze: bool = False) -> InlineKeyboardMarkup:
     rows = [[
         InlineKeyboardButton("✏️ Edit", callback_data=f"edit:{task['id']}"),
+        InlineKeyboardButton("⏱ Send reminder", callback_data=f"beforemenu:{task['id']}"),
+    ], [
         InlineKeyboardButton("✅ Done", callback_data=f"done:{task['id']}"),
     ]]
-    if task.get("due_at"):
-        rows.append([
-            InlineKeyboardButton("15 min before", callback_data=f"before:15:{task['id']}"),
-            InlineKeyboardButton("30 min", callback_data=f"before:30:{task['id']}"),
-            InlineKeyboardButton("1 hr", callback_data=f"before:60:{task['id']}"),
-        ])
     if include_snooze:
-        rows.append([InlineKeyboardButton("⏰ Remind in 20 min", callback_data=f"snooze20:{task['id']}")])
+        rows.append([InlineKeyboardButton("⏰ Remind me later", callback_data=f"latermenu:{task['id']}")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -233,10 +229,8 @@ def _task_list_buttons(tasks: list[dict[str, Any]]) -> InlineKeyboardMarkup:
     for index, task in enumerate(tasks[:10], start=1):
         rows.append([
             InlineKeyboardButton(f"✏️ Edit {index}", callback_data=f"edit:{task['id']}"),
-            InlineKeyboardButton(f"✅ Done {index}", callback_data=f"done:{task['id']}"),
+            InlineKeyboardButton(f"⏱ Send reminder {index}", callback_data=f"beforemenu:{task['id']}"),
         ])
-        if task.get("due_at"):
-            rows.append([InlineKeyboardButton(f"⏱ Before {index}", callback_data=f"beforemenu:{task['id']}")])
     rows.append([InlineKeyboardButton("🔄 Refresh", callback_data="tasks:pending")])
     rows.append([InlineKeyboardButton("↩️ Home", callback_data="home")])
     return InlineKeyboardMarkup(rows)
@@ -683,12 +677,14 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if action == "beforemenu" and task_id:
         await query.edit_message_text(
-            "⏱ Remind before\n\nChoose when Atlas should nudge you before the due time.",
+            "⏱ Send reminder\n\nChoose how early Atlas should nudge you before the due time.",
             reply_markup=InlineKeyboardMarkup(
                 [[
                     InlineKeyboardButton("15 min", callback_data=f"before:15:{task_id}"),
                     InlineKeyboardButton("30 min", callback_data=f"before:30:{task_id}"),
+                ], [
                     InlineKeyboardButton("1 hr", callback_data=f"before:60:{task_id}"),
+                    InlineKeyboardButton("1 day", callback_data=f"before:1440:{task_id}"),
                 ], [InlineKeyboardButton("↩️ Back", callback_data="tasks:pending")]]
             ),
         )
@@ -699,7 +695,12 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         minutes = int(minutes_text)
         task = await asyncio.to_thread(set_task_reminder_offset, user_id, selected_task_id, minutes)
         if task:
-            label = "1 hour" if minutes == 60 else f"{minutes} minutes"
+            if minutes == 1440:
+                label = "1 day"
+            elif minutes == 60:
+                label = "1 hour"
+            else:
+                label = f"{minutes} minutes"
             await query.edit_message_text(
                 _task_card(task, local_timezone, f"Reminder set {label} before", "⏱"),
                 reply_markup=_task_buttons(task),
@@ -708,10 +709,40 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await query.edit_message_text("That task is already done or no longer available.")
         return
 
-    if action == "snooze20" and task_id:
-        task = await asyncio.to_thread(snooze_task_by_id, user_id, task_id, 20)
+    if action == "latermenu" and task_id:
+        await query.edit_message_text(
+            "⏰ Remind me later\n\nChoose when Atlas should remind you again.",
+            reply_markup=InlineKeyboardMarkup(
+                [[
+                    InlineKeyboardButton("15 min", callback_data=f"later:15:{task_id}"),
+                    InlineKeyboardButton("30 min", callback_data=f"later:30:{task_id}"),
+                ], [
+                    InlineKeyboardButton("1 hr", callback_data=f"later:60:{task_id}"),
+                    InlineKeyboardButton("1 day", callback_data=f"later:1440:{task_id}"),
+                ], [InlineKeyboardButton("📋 View tasks", callback_data="tasks:pending")]]
+            ),
+        )
+        return
+
+    if action in {"later", "snooze20"} and task_id:
+        if action == "snooze20":
+            minutes = 20
+            selected_task_id = task_id
+        else:
+            _, minutes_text, selected_task_id = data.split(":", 2)
+            minutes = int(minutes_text)
+        task = await asyncio.to_thread(snooze_task_by_id, user_id, selected_task_id, minutes)
         if task:
-            await query.edit_message_text(_task_card(task, local_timezone, "Remind again", "⏰"), reply_markup=_task_buttons(task))
+            if minutes == 1440:
+                label = "1 day"
+            elif minutes == 60:
+                label = "1 hour"
+            else:
+                label = f"{minutes} minutes"
+            await query.edit_message_text(
+                _task_card(task, local_timezone, f"Remind again in {label}", "⏰"),
+                reply_markup=_task_buttons(task),
+            )
         else:
             await query.edit_message_text("That task is already done or no longer available.")
 

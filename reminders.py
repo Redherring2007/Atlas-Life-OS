@@ -73,12 +73,15 @@ def _reminder_buttons(task: dict) -> InlineKeyboardMarkup:
         [
             [
                 InlineKeyboardButton("✅ Done", callback_data=f"done:{task['id']}"),
-                InlineKeyboardButton("⏰ 20 min", callback_data=f"snooze20:{task['id']}"),
+                InlineKeyboardButton("⏰ Remind me later", callback_data=f"latermenu:{task['id']}"),
             ],
             [
-                InlineKeyboardButton("15 min before", callback_data=f"before:15:{task['id']}"),
+                InlineKeyboardButton("15 min", callback_data=f"before:15:{task['id']}"),
                 InlineKeyboardButton("30 min", callback_data=f"before:30:{task['id']}"),
+            ],
+            [
                 InlineKeyboardButton("1 hr", callback_data=f"before:60:{task['id']}"),
+                InlineKeyboardButton("1 day", callback_data=f"before:1440:{task['id']}"),
             ],
             [InlineKeyboardButton("📋 View tasks", callback_data="tasks:pending")],
         ]

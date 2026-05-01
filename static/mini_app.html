@@ -146,6 +146,7 @@
     }
 
     .capture-actions, .before-actions { margin-top: 8px; }
+    .task-actions, .before-actions { grid-template-columns: repeat(2, 1fr); }
 
     .button {
       border: 1px solid var(--line);
@@ -347,16 +348,29 @@
       }
     }
 
-    async function rememberAllowed(name) {
+    function rememberAllowed(name) {
       const key = allowedKeys[name];
       if (!key) return;
       localStorage.setItem(key, "1");
     }
 
-    async function forgetAllowed(name) {
+    function forgetAllowed(name) {
       const key = allowedKeys[name];
       if (!key) return;
       localStorage.removeItem(key);
+    }
+
+    async function hasRememberedAccess(name) {
+      const state = await permissionState(name);
+      if (state === "granted") {
+        rememberAllowed(name);
+        return true;
+      }
+      if (state === "denied") {
+        forgetAllowed(name);
+        return false;
+      }
+      return localStorage.getItem(allowedKeys[name]) === "1";
     }
 
     function updateCounts(delta) {
@@ -371,34 +385,45 @@
       return el;
     }
 
+    function reminderLabel(minutes) {
+      if (minutes === 1440) return "1 day";
+      if (minutes === 60) return "1 hour";
+      return `${minutes} minutes`;
+    }
+
+    function renderReminderOptions(el, task) {
+      el.innerHTML = `
+        <div class="task-title"></div>
+        <div class="task-meta">Send reminder before due time</div>
+        <div class="actions before-actions">
+          <button class="button" type="button" data-before="15">15 min</button>
+          <button class="button" type="button" data-before="30">30 min</button>
+          <button class="button" type="button" data-before="60">1 hr</button>
+          <button class="button" type="button" data-before="1440">1 day</button>
+        </div>
+        <button class="button" type="button" data-action="cancel">Back</button>`;
+      el.querySelector(".task-title").textContent = task.title;
+      el.querySelector('[data-action="cancel"]').addEventListener("click", () => renderTaskView(el, task));
+      el.querySelectorAll("[data-before]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const minutes = Number(button.dataset.before);
+          await mutate(() => api(`/api/tasks/${task.id}/reminder-before`, { method: "POST", body: JSON.stringify({ minutes }) }), `Reminder set ${reminderLabel(minutes)} before`);
+        });
+      });
+    }
+
     function renderTaskView(el, task) {
       el.innerHTML = `
         <div class="task-title"></div>
         <div class="task-meta"></div>
-        <div class="actions">
-          <button class="button success" type="button" data-action="done">Done</button>
+        <div class="actions task-actions">
           <button class="button" type="button" data-action="edit">Edit</button>
-          <button class="button warn" type="button" data-action="snooze">20 min</button>
-        </div>
-        <div class="actions before-actions">
-          <button class="button" type="button" data-before="15">15 min before</button>
-          <button class="button" type="button" data-before="30">30 min</button>
-          <button class="button" type="button" data-before="60">1 hr</button>
+          <button class="button primary" type="button" data-action="reminder">Send reminder</button>
         </div>`;
       el.querySelector(".task-title").textContent = task.title;
       el.querySelector(".task-meta").textContent = task.due_label;
-      el.querySelector('[data-action="done"]').addEventListener("click", async () => markDone(el, task));
       el.querySelector('[data-action="edit"]').addEventListener("click", () => renderTaskEditor(el, task));
-      el.querySelector('[data-action="snooze"]').addEventListener("click", async () => {
-        await mutate(() => api(`/api/tasks/${task.id}/snooze`, { method: "POST", body: JSON.stringify({ minutes: 20 }) }), "Reminder moved 20 minutes");
-      });
-      el.querySelectorAll("[data-before]").forEach((button) => {
-        button.addEventListener("click", async () => {
-          const minutes = Number(button.dataset.before);
-          const label = minutes === 60 ? "1 hour" : `${minutes} minutes`;
-          await mutate(() => api(`/api/tasks/${task.id}/reminder-before`, { method: "POST", body: JSON.stringify({ minutes }) }), `Reminder set ${label} before`);
-        });
-      });
+      el.querySelector('[data-action="reminder"]').addEventListener("click", () => renderReminderOptions(el, task));
     }
 
     function renderTaskEditor(el, task) {
@@ -525,7 +550,7 @@
         showToast("Location is not available on this device");
         return;
       }
-      await permissionState("geolocation");
+      await hasRememberedAccess("geolocation");
       navigator.geolocation.getCurrentPosition(async (pos) => {
         rememberAllowed("geolocation");
         const bay = prompt("Bay, row, or floor?", "") || "";
@@ -537,8 +562,8 @@
             bay_number: bay.trim() || null
           })
         }), "Parking saved");
-      }, () => {
-        forgetAllowed("geolocation");
+      }, async () => {
+        if (await permissionState("geolocation") === "denied") forgetAllowed("geolocation");
         showToast("Location permission was not granted");
       }, { enableHighAccuracy: true, timeout: 12000 });
     }
@@ -560,7 +585,7 @@
         showToast("Voice recording is not available here");
         return;
       }
-      await permissionState("microphone");
+      await hasRememberedAccess("microphone");
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         rememberAllowed("microphone");
@@ -584,7 +609,7 @@
         button.classList.add("recording");
         state.recorder.start();
       } catch (_err) {
-        forgetAllowed("microphone");
+        if (await permissionState("microphone") === "denied") forgetAllowed("microphone");
         showToast("Microphone permission was not granted");
       }
     }
