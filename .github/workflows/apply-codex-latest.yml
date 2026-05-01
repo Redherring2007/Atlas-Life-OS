@@ -1,0 +1,31 @@
+name: Apply latest Codex patch
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .codex-live/latest.patch
+      - .github/workflows/apply-codex-latest.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Apply patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git apply --whitespace=nowarn .codex-live/latest.patch
+          rm .codex-live/latest.patch .github/workflows/apply-codex-latest.yml
+          git add -A
+          git commit -m "Clarify reminder actions"
+          git push
