@@ -147,6 +147,7 @@
 
     .capture-actions, .before-actions { margin-top: 8px; }
     .task-actions, .before-actions { grid-template-columns: repeat(2, 1fr); }
+    .task-reminder { width: 100%; margin-top: 8px; }
 
     .button {
       border: 1px solid var(--line);
@@ -417,11 +418,13 @@
         <div class="task-title"></div>
         <div class="task-meta"></div>
         <div class="actions task-actions">
+          <button class="button success" type="button" data-action="done">Done</button>
           <button class="button" type="button" data-action="edit">Edit</button>
-          <button class="button primary" type="button" data-action="reminder">Send reminder</button>
-        </div>`;
+        </div>
+        <button class="button primary task-reminder" type="button" data-action="reminder">Send reminder</button>`;
       el.querySelector(".task-title").textContent = task.title;
       el.querySelector(".task-meta").textContent = task.due_label;
+      el.querySelector('[data-action="done"]').addEventListener("click", async () => markDone(el, task));
       el.querySelector('[data-action="edit"]').addEventListener("click", () => renderTaskEditor(el, task));
       el.querySelector('[data-action="reminder"]').addEventListener("click", () => renderReminderOptions(el, task));
     }

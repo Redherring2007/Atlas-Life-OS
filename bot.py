@@ -154,10 +154,10 @@ def _task_card(task: dict[str, Any], local_timezone: str, heading: str = "Task",
 
 def _task_buttons(task: dict[str, Any], include_snooze: bool = False) -> InlineKeyboardMarkup:
     rows = [[
-        InlineKeyboardButton("✏️ Edit", callback_data=f"edit:{task['id']}"),
-        InlineKeyboardButton("⏱ Send reminder", callback_data=f"beforemenu:{task['id']}"),
-    ], [
         InlineKeyboardButton("✅ Done", callback_data=f"done:{task['id']}"),
+        InlineKeyboardButton("✏️ Edit", callback_data=f"edit:{task['id']}"),
+    ], [
+        InlineKeyboardButton("⏱ Send reminder", callback_data=f"beforemenu:{task['id']}"),
     ]]
     if include_snooze:
         rows.append([InlineKeyboardButton("⏰ Remind me later", callback_data=f"latermenu:{task['id']}")])
@@ -228,9 +228,10 @@ def _task_list_buttons(tasks: list[dict[str, Any]]) -> InlineKeyboardMarkup:
     rows = []
     for index, task in enumerate(tasks[:10], start=1):
         rows.append([
+            InlineKeyboardButton(f"✅ Done {index}", callback_data=f"done:{task['id']}"),
             InlineKeyboardButton(f"✏️ Edit {index}", callback_data=f"edit:{task['id']}"),
-            InlineKeyboardButton(f"⏱ Send reminder {index}", callback_data=f"beforemenu:{task['id']}"),
         ])
+        rows.append([InlineKeyboardButton(f"⏱ Send reminder {index}", callback_data=f"beforemenu:{task['id']}")])
     rows.append([InlineKeyboardButton("🔄 Refresh", callback_data="tasks:pending")])
     rows.append([InlineKeyboardButton("↩️ Home", callback_data="home")])
     return InlineKeyboardMarkup(rows)
